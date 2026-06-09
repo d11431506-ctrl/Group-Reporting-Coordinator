@@ -1,2134 +1,1748 @@
-import React, { useState, useMemo, useRef } from 'react';
-import {
-  Users,
-  Award,
-  ShieldAlert,
-  Upload,
-  Check,
-  AlertCircle,
-  Plus,
-  FileText,
-  BarChart2,
-  Eye,
-  Clock,
-  CheckCircle,
-  X,
-  Lock,
-  ChevronRight,
-  Briefcase,
-  Trash2,
-  RefreshCw,
-  Sparkles,
-  Bookmark,
-  ChevronLeft,
-  Calendar,
-  Hourglass,
-  Sliders,
-  CheckSquare,
-  Cpu,
-  Image as ImageIcon,
-  Paperclip,
-  File,
-  Trash,
-  Camera,
-  ToggleLeft,
-  ToggleRight,
-  UserCheck
-} from 'lucide-react';
-
-// 預定義專長標籤
-const SPECIALTY_OPTIONS = [
-  { value: 'all', label: '⚡ 全能配合/聽從指揮', icon: '🏃' },
-  { value: 'data', label: '📊 數據蒐集/文獻查閱', icon: '🔍' },
-  { value: 'ppt', label: '🎨 PPT排版/美術美化', icon: '💻' },
-  { value: 'presentation', label: '📢 報告口條/上台發表', icon: '🗣️' }
-];
-
-export default function App() {
-  // 獲取當前真實的今天日期字串 (YYYY-MM-DD)
-  const getTodayString = () => {
-    return new Date().toISOString().split('T')[0];
-  };
-
-  // 獲取預設的截止日期
-  const getDefaultDeadlineString = (daysOffset = 14) => {
-    const date = new Date();
-    date.setDate(date.getDate() + daysOffset);
-    return date.toISOString().split('T')[0];
-  };
-
-  // 步驟狀態
-  const [currentStep, setCurrentStep] = useState('step_project');
-
-  // 追蹤最大解鎖步驟
-  const [maxStepIndex, setMaxStepIndex] = useState(0);
-
-  // 核心：系統運作模式 State
-  const [isDemoMode, setIsDemoMode] = useState(true);
-  const [hasBoundIdentity, setHasBoundIdentity] = useState(false);
-
-  // 1. 專案背景與總時效 State
-  const [projectName, setProjectName] = useState('');
-  const [projectDesc, setProjectDesc] = useState('');
-  const [projectDeadline, setProjectDeadline] = useState(getDefaultDeadlineString(21));
-  const [memberCount, setMemberCount] = useState(4);
-
-  // 2. 作業與規範上傳 State
-  const [assignmentFile, setAssignmentFile] = useState(null);
-  const [assignmentText, setAssignmentText] = useState('');
-
-  // 3. 組員與專長備註 State
-  const [members, setMembers] = useState([
-    { id: 'm1', name: '陳小東', isLeader: true, avatar: '🦁', customAvatarUrl: null, specialty: 'presentation' },
-    { id: 'm2', name: '林小明', isLeader: false, avatar: '🐼', customAvatarUrl: null, specialty: 'data' },
-    { id: 'm3', name: '黃小華', isLeader: false, avatar: '🦊', customAvatarUrl: null, specialty: 'ppt' },
-    { id: 'm4', name: '張小美', isLeader: false, avatar: '🦥', customAvatarUrl: null, specialty: 'all' }
-  ]);
-  const [currentUser, setCurrentUser] = useState('m1');
-
-  // 4. 任務與分配 State
-  const [tasks, setTasks] = useState([]);
-
-  // 新增任務暫存 State
-  const [newTempTaskTitle, setNewTempTaskTitle] = useState('');
-  const [newTempTaskDiff, setNewTempTaskDiff] = useState(2);
-  const [newTempTaskCat, setNewTempTaskCat] = useState('all');
-  const [newTempTaskDeadline, setNewTempTaskDeadline] = useState(getDefaultDeadlineString(14));
-
-  // AI 生成 Loading 狀態與錯誤訊息
-  const [isAiGenerating, setIsAiGenerating] = useState(false);
-  const [aiError, setAiError] = useState('');
-
-  // 實證上傳暫存 State
-  const [activeTaskForProof, setActiveTaskForProof] = useState(null);
-  const [proofTypeSelection, setProofTypeSelection] = useState('file');
-  const [proofInputText, setProofInputText] = useState('');
-  const [proofInputUrl, setProofInputUrl] = useState('');
-  const [proofAttachedFile, setProofAttachedFile] = useState(null);
-
-  // 用於自訂組員照片上傳的 File Input Ref 陣列
-  const fileInputRefs = useRef({});
-
-  // 頭像集
-  const avatars = ['🦁', '🐼', '🦊', '🦥', '🐯', '🐸', '🐨', '🐙'];
-
-  // Stepper 進度指示
-  const wizardSteps = [
-    { id: 'step_project', label: '1. 專案背景', icon: Bookmark },
-    { id: 'step_assignment', label: '2. 作業標準', icon: FileText },
-    { id: 'step_team', label: '3. 組員專長', icon: Users },
-    { id: 'step_tasks', label: '4. 工作分配', icon: Sliders },
-    { id: 'step_tracking', label: '5. 看板監督', icon: ShieldAlert }
-  ];
-
-  const currentStepIndex = wizardSteps.findIndex(s => s.id === currentStep);
-
-  // ==================== 倒數計時與進度規劃運算 ====================
-  const projectCountdown = useMemo(() => {
-    const today = new Date(getTodayString());
-    const deadline = new Date(projectDeadline);
-    const diffTime = deadline - today;
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    return {
-      days: diffDays,
-      isOverdue: diffDays < 0
-    };
-  }, [projectDeadline]);
-
-  // 智慧進度規劃區間
-  const plannedMilestones = useMemo(() => {
-    const today = new Date(getTodayString());
-    const deadline = new Date(projectDeadline);
-    const totalDuration = deadline - today;
-
-    if (totalDuration <= 0) return [];
-
-    const getFormattedDate = (date) => date.toISOString().split('T')[0];
-
-    const step1Date = new Date(today.getTime() + totalDuration * 0.3);
-    const step2Date = new Date(today.getTime() + totalDuration * 0.65);
-    const step3Date = new Date(today.getTime() + totalDuration * 0.9);
-
-    return [
-      { id: 'm1', name: '📚 階段一：研究大綱與文獻完成期', date: getFormattedDate(step1Date), desc: '建議此時完成大綱，確保研究不偏題' },
-      { id: 'm2', name: '📊 階段二：數據與統計完成期', date: getFormattedDate(step2Date), desc: '建議此時數據完成，進入圖表繪製' },
-      { id: 'm3', name: '🎨 階段三：PPT美化與口頭排練期', date: getFormattedDate(step3Date), desc: '預留最後時間進行簡報修飾與上台演練' }
-    ];
-  }, [projectDeadline]);
-
-  // ==================== 步驟防呆驗證與線性跳轉邏輯 ====================
-  const validateStepData = (stepId) => {
-    if (stepId === 'step_project') {
-      if (!projectName.trim()) {
-        alert('請先輸入專案主題名稱！');
-        return false;
-      }
-      if (projectCountdown.days <= 0) {
-        alert(`請先設定合理的「專案總截止日期」（必須晚於今天 ${getTodayString().replace(/-/g, '/')}）！`);
-        return false;
-      }
-    }
-
-    if (stepId === 'step_team') {
-      if (members.some(m => !m.name.trim())) {
-        alert('組員姓名不可為空白，請檢查所有組員名字！');
-        return false;
-      }
-      if (!members.some(m => m.isLeader)) {
-        alert('小組必須指定一位組長，請點選組員右側的「設為組長」按鈕！');
-        return false;
-      }
-    }
-
-    if (stepId === 'step_tasks') {
-      if (tasks.length === 0) {
-        alert('請先在左側增加子任務，再進行指派，或點選頂部的 AI 自動拆解與分配。');
-        return false;
-      }
-      if (tasks.some(t => !t.assignee)) {
-        alert('防躺分警報：有子任務尚未指派負責人，請先指派完畢或點選智慧自動分工！');
-        return false;
-      }
-      if (tasks.some(t => new Date(t.deadline) > new Date(projectDeadline))) {
-        alert('⚠️ 警告：部分子任務的截止日期晚於專案總截止日期，請在右側調整子任務日期。');
-        return false;
-      }
-    }
-    return true;
-  };
-
-  const handleGoToStep = (targetStepId) => {
-    const targetIdx = wizardSteps.findIndex(s => s.id === targetStepId);
-
-    if (targetIdx < currentStepIndex) {
-      setCurrentStep(targetStepId);
-      return;
-    }
-
-    for (let i = currentStepIndex; i < targetIdx; i++) {
-      const stepToValidate = wizardSteps[i].id;
-      if (!validateStepData(stepToValidate)) {
-        return;
-      }
-    }
-
-    setCurrentStep(targetStepId);
-    if (targetIdx > maxStepIndex) {
-      setMaxStepIndex(targetIdx);
-    }
-  };
-
-  // ==================== 一鍵清除與載入範例主控面板 ====================
-  const handleStartNewProject = () => {
-    setProjectName('');
-    setProjectDesc('');
-    setProjectDeadline(getDefaultDeadlineString(21));
-    setAssignmentFile(null);
-    setAssignmentText('');
-    setMemberCount(4);
-    setMembers([
-      { id: 'm1', name: '組長', isLeader: true, avatar: '🦁', customAvatarUrl: null, specialty: 'all' },
-      { id: 'm2', name: '組員 2', isLeader: false, avatar: '🐼', customAvatarUrl: null, specialty: 'all' },
-      { id: 'm3', name: '組員 3', isLeader: false, avatar: '🦊', customAvatarUrl: null, specialty: 'all' },
-      { id: 'm4', name: '組員 4', isLeader: false, avatar: '🦥', customAvatarUrl: null, specialty: 'all' }
-    ]);
-    setTasks([]);
-    setAiError('');
-    setHasBoundIdentity(false);
-    setMaxStepIndex(0);
-    setCurrentStep('step_project');
-  };
-
-  const handleLoadDemoProject = () => {
-    setProjectName('探究與實作：台北市減塑政策成效分析');
-    setProjectDesc('研究台北市超商與飲料店減塑政策的實施成效，並進行問卷調查與數據統計。');
-    setProjectDeadline(getDefaultDeadlineString(21));
-    setAssignmentFile('台北市減塑專題說明書.pdf');
-    setAssignmentText('作業規範：期末需繳交15頁報告與10分鐘口頭簡報，需包含問卷數據統計與圖表分析。');
-    setMemberCount(4);
-    setMembers([
-      { id: 'm1', name: '陳小東', isLeader: true, avatar: '🦁', customAvatarUrl: null, specialty: 'presentation' },
-      { id: 'm2', name: '林小明', isLeader: false, avatar: '🐼', customAvatarUrl: null, specialty: 'data' },
-      { id: 'm3', name: '黃小華', isLeader: false, avatar: '🦊', customAvatarUrl: null, specialty: 'ppt' },
-      { id: 'm4', name: '張小美', isLeader: false, avatar: '🦥', customAvatarUrl: null, specialty: 'all' }
-    ]);
-
-    setTasks([
-      { id: 't1', title: '問卷設計、發放與回收100份', assignee: 'm2', difficulty: 3, category: 'data', status: 'review', proofText: '問卷已發放，收到120份數據。', proofType: 'file', proofFile: '問卷回收後台_林小明.png', verifiedBy: ['m1'], allocationReason: '✨ 專長符合林小明的【數據蒐集】', deadline: getDefaultDeadlineString(7) },
-      { id: 't2', title: '問卷數據初審與異常清洗', assignee: 'm4', difficulty: 2, category: 'all', status: 'done', proofText: '完成清洗20筆無效作答。', proofType: 'link', proofUrl: 'https://docs.google.com/document/d/2', verifiedBy: ['m2', 'm3'], allocationReason: '⚖️ 彈性調度 (張小美全能協助)', deadline: getDefaultDeadlineString(9) },
-      { id: 't3', title: '減塑政策歷史數據查閱蒐集', assignee: 'm2', difficulty: 1, category: 'data', status: 'todo', proofText: '', proofUrl: '', verifiedBy: [], allocationReason: '✨ 專長符合林小明的【數據蒐集】', deadline: getDefaultDeadlineString(11) },
-      { id: 't4', title: '數據統計與圖表可視化繪製', assignee: 'm3', difficulty: 2, category: 'ppt', status: 'todo', proofText: '', proofUrl: '', verifiedBy: [], allocationReason: '✨ 專長符合黃小華的【PPT排版】', deadline: getDefaultDeadlineString(14) },
-      { id: 't5', title: 'PPT 投影片大綱與視覺設計', assignee: 'm3', difficulty: 2, category: 'ppt', status: 'todo', proofText: '', proofUrl: '', verifiedBy: [], allocationReason: '✨ 專長符合黃小華的【PPT排版】', deadline: getDefaultDeadlineString(16) },
-      { id: 't6', title: '15頁期末書面報告排版與撰寫', assignee: 'm4', difficulty: 2, category: 'all', status: 'todo', proofText: '', proofUrl: '', verifiedBy: [], allocationReason: '⚖️ 彈性調度 (張小美全能協助)', deadline: getDefaultDeadlineString(18) },
-      { id: 't7', title: 'PPT 演練與口頭報告彩排錄影', assignee: 'm1', difficulty: 2, category: 'presentation', status: 'todo', proofText: '', proofUrl: '', verifiedBy: [], allocationReason: '✨ 專長符合陳小東的【報告口條】', deadline: getDefaultDeadlineString(19) },
-      { id: 't8', title: '報告總結心得與反思彙整', assignee: 'm1', difficulty: 2, category: 'presentation', status: 'todo', proofText: '', proofUrl: '', verifiedBy: [], allocationReason: '✨ 專長符合陳小東的【報告口條】', deadline: getDefaultDeadlineString(20) }
-    ]);
-    setAiError('');
-    setHasBoundIdentity(false);
-    setMaxStepIndex(4);
-    setCurrentStep('step_project');
-  };
-
-  // 更新成員數量
-  const handleMemberCountChange = (count) => {
-    const newCount = Math.max(2, Math.min(8, count));
-    setMemberCount(newCount);
-
-    setMembers(prev => {
-      if (newCount > prev.length) {
-        const added = [];
-        for (let i = prev.length; i < newCount; i++) {
-          added.push({
-            id: `m${i+1}`,
-            name: `組員 ${i+1}`,
-            isLeader: false,
-            avatar: avatars[i % avatars.length],
-            customAvatarUrl: null,
-            specialty: 'all'
-          });
-        }
-        return [...prev, ...added];
-      } else {
-        const sliced = prev.slice(0, newCount);
-        if (!sliced.some(m => m.isLeader)) {
-          sliced[0].isLeader = true;
-        }
-        return sliced;
-      }
-    });
-  };
-
-  const updateMemberName = (id, newName) => {
-    setMembers(prev => prev.map(m => m.id === id ? { ...m, name: newName } : m));
-  };
-
-  const updateMemberSpecialty = (id, spec) => {
-    setMembers(prev => prev.map(m => m.id === id ? { ...m, specialty: spec } : m));
-  };
-
-  // 處理自訂組員相片上傳並轉換為 Base64
-  const handleCustomAvatarUpload = (e, memberId) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (!file.type.startsWith('image/')) {
-      alert('上傳格式錯誤！請選擇圖片檔案。');
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      setMembers(prev => prev.map(m =>
-        m.id === memberId
-          ? { ...m, customAvatarUrl: event.target.result }
-          : m
-      ));
-    };
-    reader.readAsDataURL(file);
-  };
-
-  // 清除自訂相片
-  const handleClearCustomAvatar = (memberId) => {
-    setMembers(prev => prev.map(m =>
-      m.id === memberId ? { ...m, customAvatarUrl: null } : m
-    ));
-  };
-
-  const setLeader = (id) => {
-    setMembers(prev => prev.map(m => ({ ...m, isLeader: m.id === id })));
-  };
-
-  const autoPickLeader = () => {
-    const randomIndex = Math.floor(Math.random() * members.length);
-    setMembers(prev => prev.map((m, idx) => ({ ...m, isLeader: idx === randomIndex })));
-  };
-
-  const handleFileUpload = (e) => {
-    if (e.target.files && e.target.files[0]) {
-      setAssignmentFile(e.target.files[0].name);
-    }
-  };
-
-  // 模擬組員提交工作實證的檔案上傳
-  const handleProofFileAttached = (e) => {
-    if (e.target.files && e.target.files[0]) {
-      setProofAttachedFile(e.target.files[0].name);
-    }
-  };
-
-  // 新增子任務
-  const addTempTask = () => {
-    if (!newTempTaskTitle.trim()) return;
-
-    let guessedCat = newTempTaskCat;
-    if (guessedCat === 'all') {
-      const titleLower = newTempTaskTitle.toLowerCase();
-      if (titleLower.includes('ppt') || titleLower.includes('簡報') || titleLower.includes('排版') || titleLower.includes('美術') || titleLower.includes('美化')) {
-        guessedCat = 'ppt';
-      } else if (titleLower.includes('口頭') || titleLower.includes('發表') || titleLower.includes('上台') || titleLower.includes('報告') || titleLower.includes('演練')) {
-        guessedCat = 'presentation';
-      } else if (titleLower.includes('數據') || titleLower.includes('文獻') || titleLower.includes('收集') || titleLower.includes('查資料') || titleLower.includes('統計') || titleLower.includes('問卷')) {
-        guessedCat = 'data';
-      }
-    }
-
-    const newTask = {
-      id: `t${Date.now()}`,
-      title: newTempTaskTitle,
-      assignee: '',
-      difficulty: Number(newTempTaskDiff),
-      category: guessedCat,
-      status: 'todo',
-      proofText: '',
-      proofType: '',
-      proofUrl: '',
-      proofFile: null,
-      verifiedBy: [],
-      allocationReason: '',
-      deadline: newTempTaskDeadline
-    };
-    setTasks(prev => [...prev, newTask]);
-    setNewTempTaskTitle('');
-    setNewTempTaskCat('all');
-  };
-
-  const deleteTempTask = (id) => {
-    setTasks(prev => prev.filter(t => t.id !== id));
-  };
-
-  // ==================== 智慧雙重分配演算法 ====================
-  const allocateTasksLocally = (tasksList) => {
-    if (tasksList.length === 0) return [];
-
-    let tasksToAllocate = tasksList.map(t => ({ ...t, assignee: '', allocationReason: '' }));
-
-    const memberWorkloads = members.map(m => ({
-      id: m.id,
-      name: m.name,
-      workload: 0,
-      taskCount: 0,
-      specialty: m.specialty || 'all'
-    }));
-
-    // 第一階段：確保「每個人都分到至少 1 個任務」
-    if (tasksToAllocate.length >= members.length) {
-      memberWorkloads.forEach(mw => {
-        let targetTaskIndex = tasksToAllocate.findIndex(t => !t.assignee && t.category === mw.specialty);
-
-        if (targetTaskIndex === -1) {
-          targetTaskIndex = tasksToAllocate.findIndex(t => !t.assignee && t.category === 'all');
-        }
-
-        if (targetTaskIndex === -1) {
-          let minDiff = Infinity;
-          let bestIdx = -1;
-          tasksToAllocate.forEach((t, idx) => {
-            if (!t.assignee && t.difficulty < minDiff) {
-              minDiff = t.difficulty;
-              bestIdx = idx;
-            }
-          });
-          targetTaskIndex = bestIdx;
-        }
-
-        if (targetTaskIndex !== -1) {
-          const task = tasksToAllocate[targetTaskIndex];
-          task.assignee = mw.id;
-          mw.workload += task.difficulty;
-          mw.taskCount += 1;
-
-          const specLabel = SPECIALTY_OPTIONS.find(o => o.value === task.category)?.label.split(' ')[1] || '專長';
-          if (task.category !== 'all' && mw.specialty === task.category) {
-            task.allocationReason = `🌟 首輪分派：專長優先【${specLabel}】保障參與`;
-          } else {
-            task.allocationReason = `⚖️ 首輪分派：保障基本工作量，人人參與`;
-          }
-        }
-      });
-    }
-
-    // 第二階段：將賸餘任務用智慧負載分配給「累積負載最低的人」
-    let unassignedTasks = tasksToAllocate.filter(t => !t.assignee);
-    unassignedTasks.sort((a, b) => b.difficulty - a.difficulty);
-
-    unassignedTasks.forEach(task => {
-      let bestMember = null;
-      let minWorkload = Infinity;
-
-      memberWorkloads.forEach(mw => {
-        if (mw.workload < minWorkload) {
-          minWorkload = mw.workload;
-          bestMember = mw;
-        } else if (mw.workload === minWorkload) {
-          if (task.category !== 'all' && mw.specialty === task.category) {
-            bestMember = mw;
-          }
-        }
-      });
-
-      if (bestMember) {
-        const originalTask = tasksToAllocate.find(t => t.id === task.id);
-        if (originalTask) {
-          originalTask.assignee = bestMember.id;
-          bestMember.workload += task.difficulty;
-          bestMember.taskCount += 1;
-
-          const isMatch = task.category !== 'all' && bestMember.specialty === task.category;
-          if (isMatch) {
-            const specLabel = SPECIALTY_OPTIONS.find(o => o.value === task.category)?.label.split(' ')[1] || '專長';
-            originalTask.allocationReason = `✨ 專長符合配對 (【${specLabel}】且工作量平衡)`;
-          } else if (bestMember.specialty === 'all') {
-            originalTask.allocationReason = `⚖️ 彈性分流 (${bestMember.name}全能配合)`;
-          } else {
-            originalTask.allocationReason = `⚖️ 負載平衡調度 (指派至負載最輕成員)`;
-          }
-        }
-      }
-    });
-
-    // 推算合理截止日
-    tasksToAllocate.forEach((task, idx) => {
-      const today = new Date(getTodayString());
-      const deadline = new Date(projectDeadline);
-      const totalDuration = deadline - today;
-      if (totalDuration > 0) {
-        const offsetPercent = 0.3 + (idx / tasksToAllocate.length) * 0.6;
-        const taskDate = new Date(today.getTime() + totalDuration * offsetPercent);
-        task.deadline = taskDate.toISOString().split('T')[0];
-      }
-    });
-
-    return tasksToAllocate;
-  };
-
-  const handleLocalAllocationOnly = () => {
-    if (tasks.length === 0) {
-      alert('請先在左邊增加子任務，再點擊自動分工！或點擊下方的 AI 自動拆解按鈕。');
-      return;
-    }
-    const allocated = allocateTasksLocally(tasks);
-    setTasks(allocated);
-  };
-
-  // ==================== 🧠 AI 智慧細分拆解與分配核心 ====================
-  const handleAiDeconstructAndAllocate = async () => {
-    if (!projectName.trim() && !assignmentText.trim()) {
-      alert('請先在第一頁與第二頁輸入「專題名稱」或「作業規範內容」，AI 才能幫您精準分析拆解任務喔！');
-      setCurrentStep('step_project');
-      return;
-    }
-
-    setIsAiGenerating(true);
-    setAiError('');
-
-    const apiKey = "";
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-
-    const systemPrompt = `你是一個資深的學校專題指導老師與敏捷開發PM。你的任務是閱讀學生的「專題報告主題」與「作業規格說明」。
-為了實現「工作量絕對平均、人人有工作、任務小而易完成」的敏捷開發目標，你必須幫他們將這份大作業高度精細化地拆解成至少 ${memberCount * 2} 個 (介於 6 到 10 個) 微型、具體、可落實、可量化的子任務 (Subtasks)。
-你需要將拆解出的子任務輸出成符合 JSON 格式 of array，包含以下屬性：
-1. title: 微型子任務名稱 (例如："上網蒐集3份減塑相關期刊並摘要")
-2. difficulty: 困難度，只能是 1, 2, 3 的整數 (1: 簡單, 2: 中等, 3: 困難)
-3. category: 分類，必須是 "data" (數據/文獻)、"ppt" (簡報排版)、"presentation" (口條發表)、"all" (不限專長) 其中之一。
-請嚴格遵守這個 output 格式，不要有額外的說明字句。`;
-
-    const userQuery = `請依據我的專題主題：「${projectName}」和作業規範：「${assignmentText}」，幫我拆解成適合 ${memberCount} 個人完成的「至少 ${memberCount * 2} 個」極細緻子任務。每個任務必須簡短、具體且容易在 1-2 天內完成，以便團隊協作且分擔的工作量絕對均等。請以 JSON 陣列格式回傳。`;
-
-    const payload = {
-      contents: [{ parts: [{ text: userQuery }] }],
-      systemInstruction: { parts: [{ text: systemPrompt }] },
-      generationConfig: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: "ARRAY",
-          items: {
-            type: "OBJECT",
-            properties: {
-              title: { type: "STRING" },
-              difficulty: { type: "INTEGER" },
-              category: { type: "STRING" }
-            },
-            required: ["title", "difficulty", "category"]
-          }
-        }
-      }
-    };
-
-    let retries = 5;
-    let delay = 1000;
-    let success = false;
-    let resultText = "";
-
-    while (retries > 0 && !success) {
-      try {
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-
-        if (!response.ok) {
-          throw new Error(`API response status: ${response.status}`);
-        }
-
-        const data = await response.json();
-        resultText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (resultText) {
-          success = true;
-        } else {
-          throw new Error("No text returned from Gemini API");
-        }
-      } catch (err) {
-        retries--;
-        if (retries === 0) {
-          setAiError("AI 拆解服務暫時不可用，請稍後再試，或使用手動新增與公平分配。");
-          setIsAiGenerating(false);
-          return;
-        }
-        await new Promise(resolve => setTimeout(resolve, delay));
-        delay *= 2;
-      }
-    }
-
-    try {
-      const aiTasks = JSON.parse(resultText);
-
-      const formattedAiTasks = aiTasks.map((task, idx) => ({
-        id: `t_ai_${Date.now()}_${idx}`,
-        title: task.title,
-        difficulty: Number(task.difficulty) || 2,
-        category: task.category || 'all',
-        status: 'todo',
-        proofText: '',
-        proofType: '',
-        proofUrl: '',
-        proofFile: null,
-        verifiedBy: [],
-        allocationReason: '',
-        deadline: projectDeadline
-      }));
-
-      const allocatedTasks = allocateTasksLocally(formattedAiTasks);
-      setTasks(allocatedTasks);
-      setIsAiGenerating(false);
-
-    } catch (parseErr) {
-      setAiError("解析 AI 回傳格式失敗，請再點擊一次重試，或採用手動分工分配。");
-      setIsAiGenerating(false);
-    }
-  };
-
-  // 提交實證 (升級：支援本地圖片、實體檔案或雲端連結二選一/雙重提交)
-  const submitWorkProof = (e) => {
-    e.preventDefault();
-    if (!activeTaskForProof) return;
-
-    setTasks(prev => prev.map(t => {
-      if (t.id === activeTaskForProof.id) {
-        return {
-          ...t,
-          status: 'review',
-          proofText: proofInputText,
-          proofType: proofTypeSelection,
-          proofUrl: proofTypeSelection === 'link' ? proofInputUrl : '',
-          proofFile: proofTypeSelection === 'file' ? (proofAttachedFile || '實體成果佐證.png') : null,
-          verifiedBy: []
-        };
-      }
-      return t;
-    }));
-
-    setActiveTaskForProof(null);
-    setProofInputText('');
-    setProofInputUrl('');
-    setProofAttachedFile(null);
-  };
-
-  // 審核核實
-  const verifyTask = (taskId) => {
-    setTasks(prev => prev.map(t => {
-      if (t.id === taskId) {
-        if (!t.verifiedBy.includes(currentUser)) {
-          const updatedVerified = [...t.verifiedBy, currentUser];
-          const newStatus = updatedVerified.length >= 2 ? 'done' : 'review';
-          return {
-            ...t,
-            verifiedBy: updatedVerified,
-            status: newStatus
-          };
-        }
-      }
-      return t;
-    }));
-  };
-
-  const handleAssigneeChange = (taskId, memberId) => {
-    const chosenMember = members.find(m => m.id === memberId);
-    setTasks(prev => prev.map(t => t.id === taskId ? {
-      ...t,
-      assignee: memberId,
-      allocationReason: chosenMember ? `✍️ 組長手動指派給 ${chosenMember.name}` : ''
-    } : t));
-  };
-
-  const handleTaskDeadlineChange = (taskId, date) => {
-    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, deadline: date } : t));
-  };
-
-  // ==================== 貢獻度量化核心 (✨ 安全防作弊：僅 done 算分，review 顯示為待核實) ====================
-  const contributionData = useMemo(() => {
-    return members.map(m => {
-      const myTasks = tasks.filter(t => t.assignee === m.id);
-      const totalCount = myTasks.length;
-
-      if (totalCount === 0) {
-        return {
-          ...m,
-          totalDiff: 0,
-          completedDiff: 0,
-          pendingDiff: 0, // 新增：正在審查中的加權點數
-          percentage: 0,
-          score: 50
-        };
-      }
-
-      const totalDiff = myTasks.reduce((sum, t) => sum + t.difficulty, 0);
-
-      // 已安全解鎖的完成點數 (必須完全 done 才能拿 100% 分數)
-      const completedDiff = myTasks.reduce((sum, t) => {
-        if (t.status === 'done') return sum + t.difficulty;
-        return sum;
-      }, 0);
-
-      // 正在審核中 (零信任：此時不計入貢獻百分比，只作單獨提示)
-      const pendingDiff = myTasks.reduce((sum, t) => {
-        if (t.status === 'review') return sum + t.difficulty;
-        return sum;
-      }, 0);
-
-      // 盲測認可率
-      const reviewVotes = myTasks.reduce((sum, t) => sum + t.verifiedBy.length, 0);
-      const maxVotes = totalCount * 2;
-      const voteRate = maxVotes > 0 ? (reviewVotes / maxVotes) : 1;
-
-      // 綜合得分也大幅降低躺分權重 (只有正式 Done 的任務與被盲測票數才算得分)
-      const score = totalDiff > 0 ? Math.round((completedDiff / totalDiff) * 80 + (voteRate * 20)) : 50;
-
-      return {
-        ...m,
-        totalCount,
-        totalDiff,
-        completedDiff,
-        pendingDiff,
-        score: Math.min(100, Math.max(10, score))
-      };
-    });
-  }, [tasks, members]);
-
-  // 貢獻比例圖只會讀取「真實核實通過 (CompletedDiff)」的加總，確保不勞而獲者圖表為 0
-  const totalCompletedDiffSum = contributionData.reduce((sum, d) => sum + d.completedDiff, 0);
-
-  const chartData = useMemo(() => {
-    let accumulatedAngle = 0;
-    return contributionData.map((d, index) => {
-      const percentage = totalCompletedDiffSum > 0 ? (d.completedDiff / totalCompletedDiffSum) : (1 / members.length);
-      const angle = percentage * 360;
-      const startAngle = accumulatedAngle;
-      accumulatedAngle += angle;
-
-      const colors = ['#6366f1', '#10b981', '#f59e0b', '#ec4899', '#3b82f6', '#8b5cf6', '#f43f5e', '#06b6d4'];
-
-      return {
-        ...d,
-        percentage: totalCompletedDiffSum > 0 ? Math.round(percentage * 100) : 0, // 真實解鎖為 0%
-        startAngle,
-        endAngle: accumulatedAngle,
-        color: colors[index % colors.length]
-      };
-    });
-  }, [contributionData, totalCompletedDiffSum, members]);
-
-  const getCoordinatesForPercent = (percent) => {
-    const x = Math.cos(2 * Math.PI * percent);
-    const y = Math.sin(2 * Math.PI * percent);
-    return [x, y];
-  };
-
-  return (
-    <div className="min-h-screen bg-[#f8fafc] text-slate-800 font-sans pb-16 transition-all duration-300">
-
-      {/* 頂部導航欄 (重塑為明亮優雅的白色背景) */}
-      <header className="border-b border-slate-200/85 bg-white/95 backdrop-blur-md sticky top-0 z-40 px-4 py-4 md:px-8 shadow-sm">
-        <div className="max-w-4xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
-
-          <div className="flex items-center gap-3">
-            <div className="bg-gradient-to-tr from-indigo-500 to-emerald-500 p-2.5 rounded-xl shadow-md">
-              <ShieldAlert className="w-5.5 h-5.5 text-white" />
-            </div>
-            <div>
-              <h1 className="text-lg font-extrabold tracking-tight bg-gradient-to-r from-slate-900 to-slate-700 bg-clip-text text-transparent">
-                免費仔退散 <span className="text-indigo-600">ProjectHero</span>
-              </h1>
-              <p className="text-[10px] text-slate-500 font-medium">專治分組口頭躺分、進度控管之痛</p>
-            </div>
-          </div>
-
-          {/* 清除與示範主控台 (改為精緻明亮的淡色按鈕) */}
-          <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-200/60">
-            <button
-              onClick={handleStartNewProject}
-              className="text-[10px] bg-white hover:bg-rose-50 text-rose-600 px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1 border border-rose-100 shadow-sm"
-              title="清除所有欄位，開始輸入您本人的報告與作業"
-            >
-              <Trash className="w-3 h-3" />
-              <span>🧹 開啟我的新專案</span>
-            </button>
-            <button
-              onClick={handleLoadDemoProject}
-              className="text-[10px] bg-indigo-50 hover:bg-indigo-100/70 text-indigo-600 px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1 border border-indigo-100/50 shadow-sm"
-              title="一鍵填滿台北市減塑政策成效分析的範例數據"
-            >
-              <Sparkles className="w-3 h-3 animate-pulse" />
-              <span>📦 載入示範數據</span>
-            </button>
-          </div>
-
-        </div>
-      </header>
-
-      {/* Stepper 進度指示條 (明亮輕盈) */}
-      <div className="bg-white/80 border-b border-slate-200/80 py-4 px-4 sticky top-[68px] z-30 backdrop-blur-sm shadow-sm">
-        <div className="max-w-4xl mx-auto flex justify-between items-center relative">
-
-          {/* 背景連接線 */}
-          <div className="absolute top-1/2 left-0 right-0 h-0.5 bg-slate-100 -translate-y-1/2 z-0" />
-          <div
-            className="absolute top-1/2 left-0 h-0.5 bg-gradient-to-r from-indigo-400 to-emerald-400 -translate-y-1/2 z-0 transition-all duration-300"
-            style={{ width: `${(currentStepIndex / (wizardSteps.length - 1)) * 100}%` }}
-          />
-
-          {wizardSteps.map((step, idx) => {
-            const StepIcon = step.icon;
-            const isCompleted = idx < currentStepIndex;
-            const isActive = idx === currentStepIndex;
-            const isLocked = idx > maxStepIndex;
-
-            return (
-              <button
-                key={step.id}
-                disabled={isLocked}
-                onClick={() => handleGoToStep(step.id)}
-                className={`relative z-10 flex flex-col items-center gap-1.5 focus:outline-none transition-all duration-200 ${
-                  isLocked ? 'cursor-not-allowed opacity-40' : 'cursor-pointer hover:scale-105'
-                }`}
-                title={isLocked ? "請先填完當前步驟並點選下一步以解鎖" : step.label}
-              >
-                <div className={`w-8.5 h-8.5 rounded-full flex items-center justify-center border-2 transition-all duration-300 ${
-                  isCompleted ? 'bg-emerald-500 border-emerald-500 text-white shadow shadow-emerald-500/10' :
-                  isActive ? 'bg-indigo-600 border-indigo-500 text-white ring-4 ring-indigo-500/10 shadow-md shadow-indigo-500/10' :
-                  isLocked ? 'bg-slate-50 border-slate-200 text-slate-400' :
-                  'bg-white border-slate-300 text-slate-600 hover:border-slate-400 hover:text-slate-800'
-                }`}>
-                  {isLocked ? (
-                    <Lock className="w-3.5 h-3.5" />
-                  ) : isCompleted ? (
-                    <Check className="w-4 h-4 font-extrabold" />
-                  ) : (
-                    <StepIcon className="w-4 h-4" />
-                  )}
-                </div>
-                <span className={`text-[10px] md:text-xs font-bold hidden sm:inline transition ${
-                  isActive ? 'text-indigo-600 font-extrabold' : isCompleted ? 'text-emerald-600' : 'text-slate-400'
-                }`}>
-                  {step.label}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* 獨立分頁包裝卡片容器 */}
-      <main className="max-w-4xl mx-auto px-4 mt-8">
-
-        {/* 自訂專案歡迎 Banner (明亮舒服的軟綿藍背景) */}
-        {projectName === '' && tasks.length === 0 && (
-          <div className="mb-6 bg-gradient-to-r from-indigo-50/50 to-indigo-100/20 border border-indigo-100 rounded-2xl p-4.5 flex items-start gap-3.5 shadow-sm animate-fadeIn">
-            <span className="text-2xl mt-0.5">🚀</span>
-            <div className="text-xs text-slate-600 leading-relaxed">
-              <p className="font-extrabold text-indigo-700 text-sm">歡迎體驗「空白專題自訂」模式！</p>
-              <p className="mt-1">您可以直接在下方輸入您自己的作業規格，或者隨時點擊右上角的 <strong className="text-indigo-600">「📦 載入示範數據」</strong> 快速試用一輪功能展示。</p>
-            </div>
-          </div>
-        )}
-
-        {/* 主卡片改為舒適的白色基底，搭配淡陰影 */}
-        <div className="bg-white border border-slate-200/80 rounded-3xl p-6 md:p-8 shadow-xl shadow-slate-100 relative overflow-hidden">
-
-          {/* ==================== 頁面 1: 專案背景與總時效 ==================== */}
-          {currentStep === 'step_project' && (
-            <div className="flex flex-col gap-6 animate-fadeIn">
-              <div className="border-b border-slate-100 pb-4">
-                <span className="text-xs bg-indigo-50 text-indigo-600 border border-indigo-100 px-3 py-1 rounded-full font-bold">頁面 1 / 5</span>
-                <h2 className="text-xl font-extrabold text-slate-800 mt-2.5 flex items-center gap-2">
-                  <Bookmark className="w-5.5 h-5.5 text-indigo-600" />
-                  <span>設定專案主題、截止日期與小組人數</span>
-                </h2>
-                <p className="text-xs text-slate-500 mt-1">建立專案的基本資訊、總人數與時效框架。這是智慧防拖延與公平分配的核心第一步。</p>
-              </div>
-
-              <div className="flex flex-col gap-5">
-                {/* 專題名稱 */}
-                <div className="flex flex-col gap-2">
-                  <label className="text-xs text-slate-500 font-bold">專題報告主題名稱 <span className="text-rose-500">*</span></label>
-                  <input
-                    type="text"
-                    value={projectName}
-                    onChange={(e) => setProjectName(e.target.value)}
-                    className="bg-slate-50/50 border border-slate-200 rounded-xl p-3.5 text-sm text-slate-800 focus:outline-none focus:border-indigo-500 focus:bg-white transition-all font-bold placeholder-slate-400"
-                    placeholder="請輸入您的報告主題名稱 (例如：公民探究與實作專題報告)..."
-                  />
-                </div>
-
-                {/* 截止日期與小組人數 */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* 截止日期 */}
-                  <div className="flex flex-col gap-2">
-                    <label className="text-xs text-indigo-600 font-bold flex items-center gap-1">
-                      <Calendar className="w-4 h-4 text-indigo-500" />
-                      <span>專案總截止日期 (Project Deadline)</span>
-                    </label>
-                    <input
-                      type="date"
-                      value={projectDeadline}
-                      onChange={(e) => setProjectDeadline(e.target.value)}
-                      className="bg-slate-50/50 border border-slate-200 rounded-xl p-3.5 text-sm font-bold text-slate-800 focus:outline-none focus:border-indigo-500 focus:bg-white transition-all w-full"
-                    />
-                  </div>
-
-                  {/* 總人數 */}
-                  <div className="flex flex-col gap-2">
-                    <label className="text-xs text-indigo-600 font-bold flex items-center gap-1">
-                      <Users className="w-4 h-4 text-indigo-500" />
-                      <span>設定本組參與學生人數 (2 ~ 8 人)</span>
-                    </label>
-                    <div className="flex items-center gap-3 bg-slate-50/50 border border-slate-200 rounded-xl p-2 h-[52px]">
-                      <input
-                        type="range"
-                        min="2"
-                        max="8"
-                        value={memberCount}
-                        onChange={(e) => handleMemberCountChange(Number(e.target.value))}
-                        className="flex-1 h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
-                      />
-                      <div className="bg-white border border-slate-200 rounded-lg px-3 py-1 font-bold text-sm text-indigo-600 w-12 text-center shadow-sm">
-                        {memberCount}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 時效動態倒數提醒 */}
-                <div className="mt-1">
-                  {projectCountdown.days > 0 ? (
-                    <span className="text-[11px] text-emerald-600 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-100 font-bold inline-flex items-center gap-1">
-                      🕒 目前距離報告截止日尚餘 {projectCountdown.days} 天（今日系統時間：{getTodayString().replace(/-/g, '/')}）
-                    </span>
-                  ) : (
-                    <span className="text-[11px] text-rose-500 bg-rose-50 px-3 py-1.5 rounded-lg border border-rose-100 font-bold inline-flex items-center gap-1 animate-pulse">
-                      🚨 請選擇未來的時間，截止日不能早於今天。
-                    </span>
-                  )}
-                </div>
-
-                {/* 研究概述 */}
-                <div className="flex flex-col gap-2">
-                  <label className="text-xs text-slate-500 font-bold">小組研究大綱與方向描述 (選填)</label>
-                  <textarea
-                    value={projectDesc}
-                    onChange={(e) => setProjectDesc(e.target.value)}
-                    rows="2"
-                    className="bg-slate-50/50 border border-slate-200 rounded-xl p-3.5 text-sm text-slate-700 focus:outline-none focus:border-indigo-500 focus:bg-white transition-all placeholder-slate-400 leading-relaxed"
-                    placeholder="簡單概述小組的核心目標，能幫助組員更有默契..."
-                  />
-                </div>
-              </div>
-
-              {/* 前進按鈕 */}
-              <div className="flex justify-end mt-4 pt-4 border-t border-slate-100">
-                <button
-                  onClick={() => handleGoToStep('step_assignment')}
-                  className="bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white font-bold px-6 py-2.5 rounded-xl shadow-md transition flex items-center gap-1.5 text-sm"
-                >
-                  <span>下一步：上傳作業規格</span>
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          )}
-
-
-          {/* ==================== 頁面 2: 上傳作業與完工標準 ==================== */}
-          {currentStep === 'step_assignment' && (
-            <div className="flex flex-col gap-6 animate-fadeIn">
-              <div className="border-b border-slate-100 pb-4">
-                <span className="text-xs bg-indigo-50 text-indigo-600 border border-indigo-100 px-3 py-1 rounded-full font-bold">頁面 2 / 5</span>
-                <h2 className="text-xl font-extrabold text-slate-800 mt-2 flex items-center gap-2">
-                  <FileText className="w-5.5 h-5.5 text-indigo-600" />
-                  <span>作業規格與物理完工標準</span>
-                </h2>
-                <p className="text-xs text-slate-500 mt-1">明確定義這份作業需要什麼（幾頁PPT、幾字報告），拒絕模擬兩可的躺分藉口。</p>
-              </div>
-
-              <div className="flex flex-col gap-5">
-                {/* 作業說明上傳 */}
-                <div className="flex flex-col gap-2">
-                  <label className="text-xs text-slate-500 font-bold">上傳老師規定的作業標準 (簡章/PDF截圖)</label>
-                  <div className="border-2 border-dashed border-slate-200 hover:border-indigo-400 rounded-2xl p-6 text-center cursor-pointer relative transition bg-slate-50/50 hover:bg-indigo-50/10 group">
-                    <input
-                      type="file"
-                      onChange={handleFileUpload}
-                      className="absolute inset-0 opacity-0 cursor-pointer"
-                    />
-                    <Upload className="w-8 h-8 mx-auto text-slate-400 group-hover:text-indigo-500 transition mb-2" />
-                    {assignmentFile ? (
-                      <div className="text-xs text-emerald-600 font-bold flex items-center justify-center gap-1.5">
-                        <CheckCircle className="w-4.5 h-4.5 text-emerald-500" />
-                        <span>已附加檔案：{assignmentFile}</span>
-                      </div>
-                    ) : (
-                      <p className="text-xs text-slate-400 leading-relaxed font-semibold">
-                        點選或拖曳檔案上傳作業說明 (PDF / 圖片)
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                {/* 詳細規格備註 */}
-                <div className="flex flex-col gap-2">
-                  <label className="text-xs text-slate-500 font-bold">手動填寫詳細規格</label>
-                  <textarea
-                    value={assignmentText}
-                    onChange={(e) => setAssignmentText(e.target.value)}
-                    rows="4"
-                    className="bg-slate-50/50 border border-slate-200 rounded-xl p-3.5 text-sm text-slate-700 focus:outline-none focus:border-indigo-500 focus:bg-white transition-all leading-relaxed placeholder-slate-400"
-                    placeholder="請條列完工條件，例如：&#10;1. 問卷統計需收回超過100份&#10;2. 繳交15頁PDF報告&#10;3. 上台報告PPT美術美觀..."
-                  />
-                </div>
-              </div>
-
-              {/* 導航 */}
-              <div className="flex justify-between mt-4 pt-4 border-t border-slate-100">
-                <button
-                  onClick={() => handleGoToStep('step_project')}
-                  className="text-xs bg-white text-slate-500 hover:text-slate-800 border border-slate-200 px-4 py-2.5 rounded-xl font-bold flex items-center gap-1 transition"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                  <span>回上一步</span>
-                </button>
-                <button
-                  onClick={() => handleGoToStep('step_team')}
-                  className="bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white font-bold px-6 py-2.5 rounded-xl shadow-md transition flex items-center gap-1.5 text-sm"
-                >
-                  <span>下一步：輸入組員與專長</span>
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          )}
-
-
-          {/* ==================== 頁面 3: 組員名單與專長備註 ==================== */}
-          {currentStep === 'step_team' && (
-            <div className="flex flex-col gap-6 animate-fadeIn">
-
-              <div className="border-b border-slate-100 pb-4">
-                <span className="text-xs bg-indigo-50 text-indigo-600 border border-indigo-100 px-3 py-1 rounded-full font-bold">頁面 3 / 5</span>
-                <h2 className="text-xl font-extrabold text-slate-800 mt-2 flex items-center gap-2">
-                  <Users className="w-5.5 h-5.5 text-indigo-600" />
-                  <span>團隊成員、專長與真實照片自訂</span>
-                </h2>
-                <p className="text-xs text-slate-500 mt-1">名單已依第一頁設定之 <strong>{memberCount} 人</strong> 自動調整。您可以自訂名字、指定專長，並上傳他們的個人照片或自選預設 Emoji。</p>
-              </div>
-
-              {/* 隨機決定組長 */}
-              <div className="flex justify-end mb-1">
-                <button
-                  type="button"
-                  onClick={autoPickLeader}
-                  className="text-[11px] bg-slate-50 hover:bg-slate-100 text-amber-600 border border-amber-200 px-3 py-2 rounded-lg font-bold flex items-center gap-1 transition shadow-sm"
-                >
-                  <Award className="w-3.5 h-3.5 text-amber-500" />
-                  <span>系統隨機指定組長 👑</span>
-                </button>
-              </div>
-
-              {/* 組員清單卡片 */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {members.map((member) => (
-                  <div
-                    key={member.id}
-                    className={`p-4 rounded-xl border flex flex-col gap-3.5 transition-all duration-300 ${
-                      member.isLeader
-                        ? 'bg-indigo-50/40 border-indigo-200 shadow-sm shadow-indigo-500/5'
-                        : 'bg-slate-50/50 border-slate-200 hover:border-slate-350 hover:bg-white'
-                    }`}
-                  >
-
-                    {/* 上排：頭像展示與姓名修改 */}
-                    <div className="flex items-center gap-3">
-
-                      {/* 智慧大頭貼渲染區 */}
-                      <div className="relative group/avatar">
-                        {member.customAvatarUrl ? (
-                          <img
-                            src={member.customAvatarUrl}
-                            alt={member.name}
-                            className="w-12 h-12 rounded-xl object-cover border border-slate-200 shadow-sm"
-                          />
-                        ) : (
-                          <button
-                            onClick={() => {
-                              const nextAvatarIdx = (avatars.indexOf(member.avatar) + 1) % avatars.length;
-                              setMembers(prev => prev.map(m => m.id === member.id ? { ...m, avatar: avatars[nextAvatarIdx] } : m));
-                            }}
-                            className="text-2xl bg-white border border-slate-200 hover:border-slate-300 w-12 h-12 rounded-xl flex items-center justify-center transition-all shadow-sm"
-                            title="切換預設 Emoji"
-                          >
-                            {member.avatar}
-                          </button>
-                        )}
-
-                        {/* 自訂上傳懸浮按鈕 */}
-                        <div className="absolute -bottom-1 -right-1 bg-indigo-600 hover:bg-indigo-550 border border-white rounded-full p-1 cursor-pointer shadow-md transition scale-90">
-                          <label className="cursor-pointer">
-                            <Camera className="w-3 h-3 text-white" />
-                            <input
-                              type="file"
-                              accept="image/*"
-                              onChange={(e) => handleCustomAvatarUpload(e, member.id)}
-                              className="hidden"
-                            />
-                          </label>
-                        </div>
-                      </div>
-
-                      {/* 姓名輸入與自訂相片清除 */}
-                      <div className="flex-1">
-                        <input
-                          type="text"
-                          value={member.name}
-                          onChange={(e) => updateMemberName(member.id, e.target.value)}
-                          className="bg-transparent border-b border-slate-200 hover:border-slate-400 focus:border-indigo-500 text-xs font-bold text-slate-800 w-full py-0.5 focus:outline-none transition-all"
-                        />
-                        {member.customAvatarUrl && (
-                          <button
-                            onClick={() => handleClearCustomAvatar(member.id)}
-                            className="text-[9px] text-rose-500 hover:text-rose-600 mt-1 block font-bold"
-                          >
-                            重設為預設頭像
-                          </button>
-                        )}
-                      </div>
-
-                      {/* 組長按鈕 */}
-                      <button
-                        onClick={() => setLeader(member.id)}
-                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition flex items-center gap-0.5 border ${
-                          member.isLeader
-                            ? 'bg-amber-50 border-amber-200 text-amber-700 shadow-sm'
-                            : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'
-                        }`}
-                      >
-                        <Award className="w-3 h-3" />
-                        <span>{member.isLeader ? '組長' : '設為組長'}</span>
-                      </button>
-                    </div>
-
-                    {/* 下排：專長備註設定 */}
-                    <div className="flex flex-col gap-1">
-                      <span className="text-[9px] text-slate-400 font-bold block">該組員擅長的事務備註 (智慧分工依據)：</span>
-                      <select
-                        value={member.specialty}
-                        onChange={(e) => updateMemberSpecialty(member.id, e.target.value)}
-                        className="bg-white border border-slate-200 rounded-lg p-2 text-[11px] text-slate-700 font-bold focus:outline-none cursor-pointer shadow-sm focus:border-indigo-500"
-                      >
-                        {SPECIALTY_OPTIONS.map(opt => (
-                          <option key={opt.value} value={opt.value}>{opt.label}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                  </div>
-                ))}
-              </div>
-
-              {/* 導航 */}
-              <div className="flex justify-between mt-4 pt-4 border-t border-slate-100">
-                <button
-                  onClick={() => handleGoToStep('step_assignment')}
-                  className="text-xs bg-white text-slate-500 hover:text-slate-800 border border-slate-200 px-4 py-2.5 rounded-xl font-bold flex items-center gap-1 transition"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                  <span>回上一步</span>
-                </button>
-                <button
-                  onClick={() => handleGoToStep('step_tasks')}
-                  className="bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white font-bold px-6 py-2.5 rounded-xl shadow-lg transition flex items-center gap-1.5 text-sm"
-                >
-                  <span>下一步：建立分配任務</span>
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          )}
-
-
-          {/* ==================== 頁面 4: 任務庫建立與智慧分配 ==================== */}
-          {currentStep === 'step_tasks' && (
-            <div className="flex flex-col gap-6 animate-fadeIn">
-
-              <div className="border-b border-slate-100 pb-4 flex flex-col md:flex-row justify-between md:items-center gap-4">
-                <div>
-                  <span className="text-xs bg-indigo-50 text-indigo-600 border border-indigo-100 px-3 py-1 rounded-full font-bold">頁面 4 / 5</span>
-                  <h2 className="text-xl font-extrabold text-slate-800 mt-2 flex items-center gap-2">
-                    <Sliders className="w-5.5 h-5.5 text-indigo-600" />
-                    <span>智慧專長與負載分配</span>
-                  </h2>
-                  <p className="text-xs text-slate-500 mt-1">手動在左側新增子任務，或點選右側的 AI 來為您自動拆解專案！</p>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  {/* AI 自動拆解按鈕 */}
-                  <button
-                    onClick={handleAiDeconstructAndAllocate}
-                    disabled={isAiGenerating}
-                    className="bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-400 hover:to-purple-500 disabled:opacity-50 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-md transition-all flex items-center gap-1.5"
-                  >
-                    {isAiGenerating ? (
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <Cpu className="w-4 h-4 text-purple-200 animate-pulse" />
-                    )}
-                    <span>✨ AI 智慧自動拆解與分配</span>
-                  </button>
-
-                  <button
-                    onClick={handleLocalAllocationOnly}
-                    className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-sm transition flex items-center gap-1.5"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin-slow" />
-                    <span>手動任務公平分配</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* AI 錯誤提示區域 */}
-              {aiError && (
-                <div className="bg-rose-50 border border-rose-200 text-rose-600 rounded-xl p-3.5 text-xs flex items-center gap-2 animate-fadeIn">
-                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                  <span>{aiError}</span>
-                </div>
-              )}
-
-              {/* AI 載入中動畫畫面 (重塑為明亮科技感) */}
-              {isAiGenerating && (
-                <div className="bg-slate-50/50 border border-indigo-100 rounded-2xl p-8 text-center flex flex-col items-center justify-center gap-4 animate-pulse shadow-sm">
-                  <div className="bg-indigo-50 p-4 rounded-full border border-indigo-100 text-indigo-600 shadow-inner">
-                    <Cpu className="w-8 h-8 animate-spin-slow" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-extrabold text-indigo-700">AI 智慧 PM 正在為您精細分析並切割大專案工作...</p>
-                    <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">我們將依據作業性質（查文獻、數據分析、投影片排版、報告發言）切割成好做的小片任務，並公平分派！</p>
-                  </div>
-                  <div className="flex gap-1.5 mt-1">
-                    <span className="w-2.5 h-2.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                    <span className="w-2.5 h-2.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                    <span className="w-2.5 h-2.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                  </div>
-                </div>
-              )}
-
-              {/* 三大黃金完成期預估 (明亮舒適) */}
-              {!isAiGenerating && (
-                <div className="bg-indigo-50/30 border border-indigo-100 rounded-2xl p-4 shadow-inner">
-                  <p className="text-[10px] text-indigo-700 font-bold mb-2.5 flex items-center gap-1.5">
-                    <Calendar className="w-3.5 h-3.5" />
-                    <span>系統為您自動推算的階段截止日建議（專案截止：{projectDeadline}）：</span>
-                  </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    {plannedMilestones.map(m => (
-                      <div key={m.id} className="bg-white/80 p-3 rounded-xl border border-slate-100 text-[10px] shadow-sm">
-                        <span className="text-slate-700 font-bold block">{m.name.split('：')[0]}</span>
-                        <span className="text-amber-600 font-extrabold block mt-1">預計完成日：{m.date}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {!isAiGenerating && (
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-
-                  {/* 增加任務欄位 */}
-                  <div className="lg:col-span-4 bg-slate-50/60 border border-slate-200 rounded-2xl p-5 flex flex-col gap-3.5 shadow-sm">
-                    <h3 className="font-extrabold text-xs text-indigo-700 flex items-center gap-1">
-                      <Plus className="w-4 h-4" />
-                      <span>增加作業子任務</span>
-                    </h3>
-
-                    <div className="flex flex-col gap-1">
-                      <span className="text-[10px] text-slate-500 font-bold">子任務標題</span>
-                      <input
-                        type="text"
-                        value={newTempTaskTitle}
-                        onChange={(e) => setNewTempTaskTitle(e.target.value)}
-                        className="bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-800 focus:outline-none focus:border-indigo-500 shadow-sm"
-                        placeholder="例如：查文獻、做第一章簡報..."
-                      />
-                    </div>
-
-                    <div className="flex flex-col gap-1">
-                      <span className="text-[10px] text-slate-500 font-bold">任務困難度 (加權值)</span>
-                      <div className="grid grid-cols-3 gap-1.5">
-                        {[1, 2, 3].map(w => (
-                          <button
-                            key={w}
-                            type="button"
-                            onClick={() => setNewTempTaskDiff(w)}
-                            className={`py-1.5 rounded-md text-[10px] font-bold border transition ${
-                              newTempTaskDiff === w ? 'bg-indigo-600 border-indigo-500 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'
-                            }`}
-                          >
-                            W{w} {w===1 ? '🟢' : w===2 ? '🟡' : '🔴'}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col gap-1">
-                      <span className="text-[10px] text-slate-500 font-bold">子截止日設定</span>
-                      <input
-                        type="date"
-                        value={newTempTaskDeadline}
-                        onChange={(e) => setNewTempTaskDeadline(e.target.value)}
-                        className="bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-700 focus:outline-none shadow-sm"
-                      />
-                    </div>
-
-                    <div className="flex flex-col gap-1">
-                      <span className="text-[10px] text-slate-500 font-bold">核心所需專長</span>
-                      <select
-                        value={newTempTaskCat}
-                        onChange={(e) => setNewTempTaskCat(e.target.value)}
-                        className="bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-700 cursor-pointer shadow-sm"
-                      >
-                        <option value="all">⚡ 不限專長</option>
-                        <option value="data">📊 數據分析與文獻</option>
-                        <option value="ppt">🎨 PPT排版美化</option>
-                        <option value="presentation">📢 報告與口頭發表</option>
-                      </select>
-                    </div>
-
-                    <button
-                      onClick={addTempTask}
-                      className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs py-2 rounded-lg transition shadow-md"
-                    >
-                      新增至子任務清單
-                    </button>
-                  </div>
-
-                  {/* 現有任務清單與人員指派 */}
-                  <div className="lg:col-span-8 flex flex-col gap-3">
-                    <span className="text-[10px] text-slate-400 font-bold block">目前的子任務清單：</span>
-
-                    <div className="flex flex-col gap-2.5 max-h-[350px] overflow-y-auto pr-1">
-                      {tasks.length === 0 ? (
-                        <div className="text-center py-16 border-2 border-dashed border-slate-200 rounded-2xl flex flex-col items-center justify-center p-6 text-slate-400">
-                          <CheckSquare className="w-8 h-8 text-slate-400 mb-2 animate-bounce" />
-                          <p className="text-xs font-bold text-slate-600">任務庫目前空空如也！</p>
-                          <p className="text-[10px] text-slate-400 mt-1.5 max-w-xs leading-relaxed text-center">
-                            請在左側輸入您自己的專案工作，或者點選頂端 <strong className="text-indigo-600">「✨ AI 自動拆解與分配」</strong>，讓 AI 分析您第一、二頁輸入的規範並直接產生至少 {memberCount * 2} 個極其細緻的分工任務！
-                          </p>
-                        </div>
-                      ) : (
-                        tasks.map(task => {
-                          const isTaskOverdue = new Date(task.deadline) > new Date(projectDeadline);
-                          return (
-                            <div key={task.id} className={`p-3.5 bg-white border rounded-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 shadow-sm hover:border-slate-300 transition-all ${
-                              isTaskOverdue ? 'border-rose-300 bg-rose-50/10' : 'border-slate-200/70'
-                            }`}>
-                              <div className="flex-1">
-                                <span className="text-xs font-bold text-slate-800 block leading-tight">{task.title}</span>
-                                <div className="flex flex-wrap items-center gap-1.5 mt-2">
-                                  <span className="text-[8px] bg-slate-50 text-slate-500 px-1.5 py-0.5 rounded border border-slate-200 font-bold">
-                                    難度：W{task.difficulty}
-                                  </span>
-                                  <span className="text-[8px] text-slate-500 font-medium">
-                                    截止：{task.deadline}
-                                  </span>
-                                  {isTaskOverdue && (
-                                    <span className="text-[8px] bg-rose-50 text-rose-500 px-1.5 py-0.5 rounded font-extrabold animate-pulse border border-rose-100">
-                                      ⚠️ 超過專案截止日！
-                                    </span>
-                                  )}
-                                </div>
-
-                                {task.allocationReason && (
-                                  <span className="text-[8px] bg-emerald-50 text-emerald-600 border border-emerald-100 px-2 py-0.5 rounded font-bold block mt-2 w-fit">
-                                    {task.allocationReason}
-                                  </span>
-                                )}
-                              </div>
-
-                              <div className="flex items-center gap-2 w-full sm:w-auto justify-between border-t sm:border-t-0 border-slate-100 pt-2 sm:pt-0">
-                                <select
-                                  value={task.assignee}
-                                  onChange={(e) => handleAssigneeChange(task.id, e.target.value)}
-                                  className="bg-white border border-slate-200 text-[10px] font-bold rounded p-1 text-slate-700 cursor-pointer shadow-sm focus:border-indigo-500"
-                                >
-                                  <option value="">❌ 尚未指派</option>
-                                  {members.map(m => (
-                                    <option key={m.id} value={m.id}>{m.avatar} {m.name}</option>
-                                  ))}
-                                </select>
-
-                                <button
-                                  onClick={() => deleteTempTask(task.id)}
-                                  className="text-slate-400 hover:text-rose-500 p-1 transition"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* 導航 */}
-              {!isAiGenerating && (
-                <div className="flex justify-between mt-4 pt-4 border-t border-slate-100">
-                  <button
-                    onClick={() => handleGoToStep('step_team')}
-                    className="text-xs bg-white text-slate-500 hover:text-slate-800 border border-slate-200 px-4 py-2.5 rounded-xl font-bold flex items-center gap-1 transition"
-                  >
-                    <ChevronLeft className="w-4 h-4" />
-                    <span>回上一步</span>
-                  </button>
-                  <button
-                    onClick={() => handleGoToStep('step_tracking')}
-                    className="bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white font-bold px-6 py-2.5 rounded-xl shadow-lg transition flex items-center gap-1.5 text-sm"
-                  >
-                    <span>確定分配！開啟監督看板</span>
-                    <ChevronRight className="w-4 h-4" />
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
-
-          {/* ==================== 頁面 5: 看板監督與實證數據 ==================== */}
-          {currentStep === 'step_tracking' && (
-            <div className="flex flex-col gap-6 animate-fadeIn">
-
-              {/* 看板標題列與 DEMO/生產 模式切換主控台 (明亮重構) */}
-              <div className="border-b border-slate-100 pb-4 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                <div>
-                  <span className="text-xs bg-indigo-50 text-indigo-600 border border-indigo-100 px-3 py-1 rounded-full font-bold">頁面 5 / 5 (成果看板)</span>
-                  <h2 className="text-xl font-extrabold text-slate-800 mt-2 flex items-center gap-2">
-                    <ShieldAlert className="w-5.5 h-5.5 text-emerald-500" />
-                    <span>實證監督看板與即時貢獻比例</span>
-                  </h2>
-                  <p className="text-xs text-slate-500 mt-1">進入實證型跟蹤。任何人欲更新進度均須上傳 Proof 實證連結，同儕匿名核實以量化最終貢獻圖表。</p>
-                </div>
-
-                {/* 智慧演示/正式模式切換開關 (高雅白色面版) */}
-                <div className="flex flex-col items-end gap-1.5 bg-slate-50 p-3 rounded-2xl border border-slate-200 w-full md:w-auto shadow-sm">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[11px] text-slate-600 font-extrabold">演示調試模式：</span>
-                    <button
-                      onClick={() => {
-                        setIsDemoMode(!isDemoMode);
-                        if(isDemoMode) {
-                          setHasBoundIdentity(false);
+<!DOCTYPE html>
+<html lang="zh-TW" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>免費仔退散 ProjectHero - 智慧敏捷分組防躺分神器</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#f5f3ff',
+                            100: '#ede9fe',
+                            500: '#6366f1',
+                            600: '#4f46e5',
+                            700: '#4338ca',
                         }
-                      }}
-                      className="focus:outline-none transition-all duration-200"
-                      title="演示模式可在一台裝置上自由切換身份；正式模式則鎖定個人操作權限"
-                    >
-                      {isDemoMode ? (
-                        <ToggleRight className="w-10 h-6 text-indigo-600" />
-                      ) : (
-                        <ToggleLeft className="w-10 h-6 text-slate-400" />
-                      )}
-                    </button>
-                  </div>
-                  <span className="text-[9px] text-slate-500 text-right">
-                    {isDemoMode ? "💡 允許在一台電腦切換不同成員身份進行 Demo" : "🔒 模擬真實生產環境：鎖定特定成員帳號操作"}
-                  </span>
+                    },
+                    animation: {
+                        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                        'fadeIn': 'fadeIn 0.4s ease-out forwards',
+                    },
+                    keyframes: {
+                        fadeIn: {
+                            '0%': { opacity: '0', transform: 'translateY(10px)' },
+                            '100%': { opacity: '1', transform: 'translateY(0)' }
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Plus Jakarta Sans', 'Noto Sans TC', sans-serif;
+        }
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f5f9;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen pb-16 antialiased">
+
+    <!-- 頂部導航欄 -->
+    <header class="border-b border-slate-200/80 bg-white/95 backdrop-blur-md sticky top-0 z-40 px-4 py-4 md:px-8 shadow-sm">
+        <div class="max-w-5xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
+            
+            <div class="flex items-center gap-3">
+                <div class="bg-gradient-to-tr from-indigo-500 to-emerald-500 p-2.5 rounded-xl shadow-md">
+                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path>
+                    </svg>
                 </div>
-              </div>
-
-              {/* 正式生產模式：尚未綁定身份的覆蓋彈窗 (明亮白卡片) */}
-              {!isDemoMode && !hasBoundIdentity && (
-                <div className="bg-white border border-slate-200 rounded-2xl p-6 text-center flex flex-col items-center justify-center gap-4 py-12 animate-fadeIn shadow-xl">
-                  <div className="bg-indigo-50 p-3.5 rounded-full border border-indigo-100 text-indigo-600 shadow-inner">
-                    <UserCheck className="w-7 h-7" />
-                  </div>
-                  <div className="max-w-md">
-                    <h3 className="text-sm font-extrabold text-slate-800">🎯 進入看板前，請選擇你在本組的「真實身份」</h3>
-                    <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-                      為了模擬多人協作、鎖定帳號的真實生產環境，請綁定你在本小組的身份。綁定後，頂部身份切換將被鎖定，您將<strong>無法操作、上傳或審核非您本人負責的卡片。</strong>
-                    </p>
-                  </div>
-
-                  <div className="flex flex-wrap justify-center gap-2 mt-2 w-full max-w-lg">
-                    {members.map(member => (
-                      <button
-                        key={member.id}
-                        onClick={() => {
-                          setCurrentUser(member.id);
-                          setHasBoundIdentity(true);
-                        }}
-                        className="bg-slate-50 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-400 text-xs font-bold px-4 py-3 rounded-xl transition-all flex items-center gap-2 text-left min-w-[140px] shadow-sm"
-                      >
-                        {member.customAvatarUrl ? (
-                          <img src={member.customAvatarUrl} className="w-6 h-6 rounded-full object-cover border border-slate-200" />
-                        ) : (
-                          <span className="text-base">{member.avatar}</span>
-                        )}
-                        <div>
-                          <span className="block text-slate-800 font-extrabold">{member.name}</span>
-                          <span className="text-[9px] text-slate-400 block">
-                            {member.isLeader ? "👑 專案組長" : "👥 團隊成員"}
-                          </span>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-
-                  <button
-                    onClick={() => setIsDemoMode(true)}
-                    className="text-[10px] text-indigo-600 hover:underline mt-2 font-bold"
-                  >
-                    ⚙️ 我是評審，想切回【開發者 DEMO 演示模式】單機模擬四人交互
-                  </button>
+                <div>
+                    <h1 class="text-lg font-black tracking-tight bg-gradient-to-r from-slate-900 to-slate-700 bg-clip-text text-transparent">
+                        免費仔退散 <span class="text-indigo-600">ProjectHero</span>
+                    </h1>
+                    <p class="text-[10px] text-slate-500 font-bold">專治分組口頭躺分、進度控管之痛</p>
                 </div>
-              )}
+            </div>
 
-              {/* 看板的主佈局 */}
-              {(isDemoMode || hasBoundIdentity) && (
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start animate-fadeIn">
+            <!-- 清除與示範主控台 -->
+            <div class="flex items-center gap-2 bg-slate-100 p-1.5 rounded-xl border border-slate-200">
+                <button
+                    onclick="handleStartNewProject()"
+                    class="text-[11px] bg-white hover:bg-rose-50 text-rose-600 px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1.5 border border-rose-100 shadow-sm"
+                    title="清除所有欄位，開始輸入您本人的報告與作業"
+                >
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                    <span>🧹 開啟全新專案</span>
+                </button>
+                <button
+                    onclick="handleLoadDemoProject()"
+                    class="text-[11px] bg-indigo-50 hover:bg-indigo-100 text-indigo-600 px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1.5 border border-indigo-100 shadow-sm"
+                    title="一鍵填滿台北市減塑政策成效分析的範例數據"
+                >
+                    <svg class="w-3.5 h-3.5 text-indigo-500 animate-pulse" fill="currentColor" viewBox="0 0 20 20"><path d="M11 3a1 1 0 10-2 0v1a1 1 0 102 0V3zM15.657 5.757a1 1 0 00-1.414-1.414l-.707.707a1 1 0 001.414 1.414l.707-.707zM18 10a1 1 0 10-2 0v1a1 1 0 102 0v-1zM5.05 6.464a1 1 0 10-1.414-1.414l-.707.707a1 1 0 001.414 1.414l.707-.707zM5 10a1 1 0 11-2 0v-1a1 1 0 112 0v1zM8 16v-1a1 1 0 112 0v1a1 1 0 11-2 0zM12 16v-1a1 1 0 112 0v1a1 1 0 11-2 0zM16 16v-1a1 1 0 112 0v1a1 1 0 11-2 0z"></path></svg>
+                    <span>📦 載入示範數據</span>
+                </button>
+            </div>
 
-                  {/* 5-A. 看板 + 模擬身份區域 (占 8 欄) */}
-                  <div className="lg:col-span-8 flex flex-col gap-6">
+        </div>
+    </header>
 
-                    {/* 時效動態倒數儀表板 */}
-                    <div className="bg-gradient-to-r from-amber-50/50 via-white to-indigo-50/30 border border-slate-200 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-sm">
-                      <div className="flex items-center gap-2.5">
-                        <Hourglass className="w-5 h-5 text-amber-500 animate-pulse" />
+    <!-- Stepper 進度指示條 -->
+    <div class="bg-white/80 border-b border-slate-200 py-4 px-4 sticky top-[73px] z-30 backdrop-blur-sm shadow-sm">
+        <div class="max-w-5xl mx-auto flex justify-between items-center relative">
+            <!-- 背景連接線 -->
+            <div class="absolute top-1/2 left-0 right-0 h-0.5 bg-slate-100 -translate-y-1/2 z-0"></div>
+            <div id="progress-line" class="absolute top-1/2 left-0 h-0.5 bg-gradient-to-r from-indigo-400 to-emerald-400 -translate-y-1/2 z-0 transition-all duration-500" style="width: 0%;"></div>
+
+            <!-- 步驟按鈕們 -->
+            <div class="flex justify-between w-full relative z-10">
+                <button onclick="switchStep('step_project')" id="btn-step_project" class="step-btn flex flex-col items-center gap-1.5 focus:outline-none transition group">
+                    <div class="step-icon-wrapper w-9 h-9 rounded-full flex items-center justify-center border-2 bg-indigo-600 border-indigo-500 text-white shadow-md transition font-bold text-xs">1</div>
+                    <span class="text-[10px] md:text-xs font-black text-indigo-600">1. 專案背景</span>
+                </button>
+                <button onclick="switchStep('step_assignment')" id="btn-step_assignment" class="step-btn flex flex-col items-center gap-1.5 focus:outline-none transition group" disabled>
+                    <div class="step-icon-wrapper w-9 h-9 rounded-full flex items-center justify-center border-2 bg-slate-50 border-slate-200 text-slate-400 transition font-bold text-xs">2</div>
+                    <span class="text-[10px] md:text-xs font-bold text-slate-400">2. 作業標準</span>
+                </button>
+                <button onclick="switchStep('step_team')" id="btn-step_team" class="step-btn flex flex-col items-center gap-1.5 focus:outline-none transition group" disabled>
+                    <div class="step-icon-wrapper w-9 h-9 rounded-full flex items-center justify-center border-2 bg-slate-50 border-slate-200 text-slate-400 transition font-bold text-xs">3</div>
+                    <span class="text-[10px] md:text-xs font-bold text-slate-400">3. 組員專長</span>
+                </button>
+                <button onclick="switchStep('step_tasks')" id="btn-step_tasks" class="step-btn flex flex-col items-center gap-1.5 focus:outline-none transition group" disabled>
+                    <div class="step-icon-wrapper w-9 h-9 rounded-full flex items-center justify-center border-2 bg-slate-50 border-slate-200 text-slate-400 transition font-bold text-xs">4</div>
+                    <span class="text-[10px] md:text-xs font-bold text-slate-400">4. 工作分配</span>
+                </button>
+                <button onclick="switchStep('step_tracking')" id="btn-step_tracking" class="step-btn flex flex-col items-center gap-1.5 focus:outline-none transition group" disabled>
+                    <div class="step-icon-wrapper w-9 h-9 rounded-full flex items-center justify-center border-2 bg-slate-50 border-slate-200 text-slate-400 transition font-bold text-xs">5</div>
+                    <span class="text-[10px] md:text-xs font-bold text-slate-400">5. 看板監督</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 主區塊 -->
+    <main class="max-w-5xl mx-auto px-4 mt-8">
+
+        <!-- 歡迎橫幅 (動態隱藏) -->
+        <div id="welcome-banner" class="mb-6 bg-gradient-to-r from-indigo-50 to-indigo-100/30 border border-indigo-100 rounded-2xl p-5 flex items-start gap-4 shadow-sm">
+            <span class="text-3xl mt-0.5">🚀</span>
+            <div class="text-xs text-slate-600 leading-relaxed">
+                <p class="font-extrabold text-indigo-700 text-sm">歡迎體驗 ProjectHero 自訂模式！</p>
+                <p class="mt-1">您可以直接手動輸入自己專修的作業，或直接點選右上角 <strong class="text-indigo-600">「📦 載入示範數據」</strong>，即可立刻測試全部五大頁面的高階零信任安全功能！</p>
+            </div>
+        </div>
+
+        <!-- 卡片底層 -->
+        <div class="bg-white border border-slate-200 rounded-3xl p-6 md:p-8 shadow-xl shadow-slate-100 relative overflow-hidden">
+            
+            <!-- 頁面一: 專案背景 -->
+            <section id="pane_project" class="step-pane flex flex-col gap-6 animate-fadeIn">
+                <div class="border-b border-slate-100 pb-4">
+                    <span class="text-xs bg-indigo-50 text-indigo-600 border border-indigo-100 px-3 py-1 rounded-full font-bold">頁面 1 / 5</span>
+                    <h2 class="text-xl font-black text-slate-800 mt-2.5 flex items-center gap-2">🎯 建立專案基本背景</h2>
+                </div>
+
+                <div class="grid gap-4">
+                    <div>
+                        <label class="block text-xs font-black text-slate-500 mb-1">專題研究大標題 <span class="text-rose-500">*</span></label>
+                        <input id="proj-name" type="text" placeholder="例如：探究與實作：台北市減塑政策成效分析" class="w-full text-sm bg-slate-50 border border-slate-200 rounded-xl p-3 focus:outline-none focus:border-indigo-500 focus:bg-white transition">
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-black text-slate-500 mb-1">簡短專案描述或目標（選填）</label>
+                        <textarea id="proj-desc" placeholder="請簡述這份報告的核心研究重點與方向..." class="w-full text-sm bg-slate-50 border border-slate-200 rounded-xl p-3 h-20 focus:outline-none focus:border-indigo-500 focus:bg-white transition resize-none"></textarea>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
-                          <span className="text-[9px] text-amber-600 font-extrabold tracking-wider block uppercase">小組專案總時效控管</span>
-                          <h3 className="text-xs font-black text-slate-800">專案截止日期：{projectDeadline}</h3>
+                          <label class="block text-xs font-black text-slate-500 mb-1">📅 專案最終總截止日期 <span class="text-rose-500">*</span></label>
+                          <input id="proj-deadline" type="date" class="w-full text-sm bg-slate-50 border border-slate-200 rounded-xl p-3 focus:outline-none focus:border-indigo-500 focus:bg-white transition">
+                          <p id="countdown-text" class="text-[11px] text-slate-500 mt-1.5 font-bold"></p>
                         </div>
-                      </div>
-                      <div className="bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 text-center shadow-inner">
-                        <span className="text-[10px] text-slate-500 block font-bold">剩餘總天數</span>
-                        <span className="text-lg font-black text-amber-600">{projectCountdown.days}</span>
-                        <span className="text-[10px] text-slate-400 font-bold"> 天</span>
-                      </div>
-                    </div>
-
-                    {/* 當前操作身份區域 (白淨卡片) */}
-                    <div className="bg-slate-50/50 border border-slate-200 rounded-2xl p-4 flex flex-col sm:flex-row justify-between items-center gap-3">
-                      <div className="flex items-center gap-3">
-                        <span className="text-xl">👤</span>
                         <div>
-                          <span className="text-xs text-slate-400 font-bold block">
-                            {isDemoMode ? "模擬目前操作組員 (可隨時切換):" : "🔒 您目前登入的真實身份 (已鎖定):"}
-                          </span>
-                          <span className="text-xs font-extrabold text-indigo-700 flex items-center gap-1.5 mt-0.5">
-                            {members.find(m => m.id === currentUser)?.customAvatarUrl ? (
-                              <img src={members.find(m => m.id === currentUser)?.customAvatarUrl} className="w-5 h-5 rounded-full object-cover border border-slate-200" />
-                            ) : (
-                              <span>{members.find(m => m.id === currentUser)?.avatar}</span>
-                            )}
-                            <span className="font-extrabold">{members.find(m => m.id === currentUser)?.name}</span>
-                            <span className="text-[9px] bg-white text-slate-500 px-1.5 py-0.2 rounded border border-slate-200 font-normal shadow-sm">
-                              {members.find(m => m.id === currentUser)?.isLeader ? "👑 組長" : "組員"}
-                            </span>
-                          </span>
-                        </div>
-                      </div>
-
-                      {isDemoMode ? (
-                        <div className="flex items-center gap-1.5 bg-white px-2.5 py-1 rounded-lg border border-slate-200 w-full sm:w-auto animate-fadeIn shadow-sm">
-                          <span className="text-[10px] text-slate-400 font-bold">切換 Demo 身份:</span>
-                          <select
-                            value={currentUser}
-                            onChange={(e) => setCurrentUser(e.target.value)}
-                            className="bg-transparent text-xs text-indigo-600 font-bold cursor-pointer focus:outline-none border-none pr-1"
-                          >
-                            {members.map(m => (
-                              <option key={m.id} value={m.id}>{m.avatar} {m.name}</option>
-                            ))}
-                          </select>
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => {
-                            if(confirm("重設身份將需要重新綁定，確認登出當前組員嗎？")) {
-                              setHasBoundIdentity(false);
-                            }
-                          }}
-                          className="text-[10px] bg-white hover:bg-rose-50 text-slate-500 hover:text-rose-600 px-3 py-1.5 rounded-lg border border-slate-200 hover:border-rose-200 shadow-sm transition duration-150 font-bold"
-                        >
-                          🚪 登出/重選組員
-                        </button>
-                      )}
-                    </div>
-
-                    {/* 4 欄式進度看板 */}
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-
-                      {/* 1. 待處理 (TODO) */}
-                      <div className="bg-slate-50/50 border border-slate-200 rounded-xl p-2.5 flex flex-col gap-2.5 min-h-[350px] shadow-inner">
-                        <div className="flex justify-between items-center border-b border-slate-200/70 pb-2">
-                          <span className="text-[10px] font-extrabold text-slate-400 tracking-wider">待處理 (TODO)</span>
-                          <span className="text-[9px] bg-slate-200/60 text-slate-600 px-1.5 py-0.2 rounded-full font-bold shadow-sm">
-                            {tasks.filter(t => t.status === 'todo').length}
-                          </span>
-                        </div>
-                        {tasks.filter(t => t.status === 'todo').map(task => (
-                          <TaskTrackingCard
-                            key={task.id}
-                            task={task}
-                            members={members}
-                            currentUser={currentUser}
-                            onUploadProof={() => { setActiveTaskForProof(task); }}
-                            onStatusChange={(newStatus) => {
-                              setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: newStatus } : t));
-                            }}
-                          />
-                        ))}
-                      </div>
-
-                      {/* 2. 進行中 (DOING) */}
-                      <div className="bg-slate-50/50 border border-slate-200 rounded-xl p-2.5 flex flex-col gap-2.5 min-h-[350px] shadow-inner">
-                        <div className="flex justify-between items-center border-b border-slate-200/70 pb-2">
-                          <span className="text-[10px] font-extrabold text-amber-500 tracking-wider">進行中 (DOING)</span>
-                          <span className="text-[9px] bg-amber-50 text-amber-600 px-1.5 py-0.2 rounded-full font-bold shadow-sm">
-                            {tasks.filter(t => t.status === 'in_progress').length}
-                          </span>
-                        </div>
-                        {tasks.filter(t => t.status === 'in_progress').map(task => (
-                          <TaskTrackingCard
-                            key={task.id}
-                            task={task}
-                            members={members}
-                            currentUser={currentUser}
-                            onUploadProof={() => { setActiveTaskForProof(task); }}
-                            onStatusChange={(newStatus) => {
-                              setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: newStatus } : t));
-                            }}
-                          />
-                        ))}
-                      </div>
-
-                      {/* 3. 審核中 (REVIEW) */}
-                      <div className="bg-slate-50/50 border border-slate-200 rounded-xl p-2.5 flex flex-col gap-2.5 min-h-[350px] shadow-inner">
-                        <div className="flex justify-between items-center border-b border-slate-200/70 pb-2">
-                          <span className="text-[10px] font-extrabold text-indigo-500 tracking-wider">審核中 (REVIEW)</span>
-                          <span className="text-[9px] bg-indigo-50 text-indigo-600 px-1.5 py-0.2 rounded-full font-bold shadow-sm">
-                            {tasks.filter(t => t.status === 'review').length}
-                          </span>
-                        </div>
-                        {tasks.filter(t => t.status === 'review').map(task => (
-                          <TaskTrackingCard
-                            key={task.id}
-                            task={task}
-                            members={members}
-                            currentUser={currentUser}
-                            onUploadProof={() => { setActiveTaskForProof(task); }}
-                            onStatusChange={(newStatus) => {
-                              setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: newStatus } : t));
-                            }}
-                          />
-                        ))}
-                      </div>
-
-                      {/* 4. 已完成 (DONE) */}
-                      <div className="bg-slate-50/50 border border-slate-200 rounded-xl p-2.5 flex flex-col gap-2.5 min-h-[350px] shadow-inner">
-                        <div className="flex justify-between items-center border-b border-slate-200/70 pb-2">
-                          <span className="text-[10px] font-extrabold text-emerald-500 tracking-wider">已完成 (DONE)</span>
-                          <span className="text-[9px] bg-emerald-500 text-emerald-600 px-1.5 py-0.2 rounded-full font-bold shadow-sm">
-                            {tasks.filter(t => t.status === 'done').length}
-                          </span>
-                        </div>
-                        {tasks.filter(t => t.status === 'done').map(task => (
-                          <TaskTrackingCard
-                            key={task.id}
-                            task={task}
-                            members={members}
-                            currentUser={currentUser}
-                            onUploadProof={() => {}}
-                            onStatusChange={() => {}}
-                          />
-                        ))}
-                      </div>
-
-                    </div>
-
-                  </div>
-
-                  {/* 5-B. 右側：數據分析與 SVG 圖表 (占 4 欄) */}
-                  <div className="lg:col-span-4 flex flex-col gap-6 animate-fadeIn">
-
-                    {/* 待我審核的匿名盲測任務通知 */}
-                    <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-                      <h3 className="font-extrabold text-xs text-indigo-600 flex items-center gap-1.5 mb-3">
-                        <Eye className="w-4 h-4 text-indigo-500" />
-                        <span>匿名盲測審查 (待核實)</span>
-                        {tasks.filter(t => t.status === 'review' && t.assignee !== currentUser && !t.verifiedBy.includes(currentUser)).length > 0 && (
-                          <span className="animate-pulse bg-red-500 text-white text-[9px] px-1.5 py-0.5 rounded-full font-bold">
-                            {tasks.filter(t => t.status === 'review' && t.assignee !== currentUser && !t.verifiedBy.includes(currentUser)).length}
-                          </span>
-                        )}
-                      </h3>
-
-                      <div className="flex flex-col gap-2.5">
-                        {tasks.filter(t => t.status === 'review' && t.assignee !== currentUser && !t.verifiedBy.includes(currentUser)).length === 0 ? (
-                          <p className="text-[10px] text-slate-400 text-center py-5">目前沒有需要您核對的項目。</p>
-                        ) : (
-                          tasks.filter(t => t.status === 'review' && t.assignee !== currentUser && !t.verifiedBy.includes(currentUser)).map(task => (
-                            <div key={task.id} className="bg-slate-50 border border-slate-200 rounded-xl p-3 flex flex-col gap-2 shadow-inner">
-                              <span className="text-[8px] text-indigo-500 font-extrabold uppercase tracking-wider block">組員進度呈報：</span>
-                              <p className="text-xs font-bold text-slate-800 leading-tight">{task.title}</p>
-
-                              <div className="bg-white p-2.5 rounded text-[10px] text-slate-600 italic border border-slate-200">
-                                "{task.proofText}"
-                              </div>
-
-                              {/* 顯示雲端連結或上傳的實體檔案 */}
-                              {task.proofType === 'link' && task.proofUrl && (
-                                <a
-                                  href={task.proofUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="text-[10px] text-indigo-600 hover:underline flex items-center gap-1 mt-1 font-semibold"
-                                >
-                                  <Paperclip className="w-3.5 h-3.5 text-indigo-500" />
-                                  <span>開啟雲端證明連結</span>
-                                </a>
-                              )}
-
-                              {task.proofType === 'file' && task.proofFile && (
-                                <div className="text-[10px] text-emerald-600 flex items-center gap-1.5 mt-1 bg-emerald-50 px-2 py-1 rounded border border-emerald-100 w-fit">
-                                  <File className="w-3.5 h-3.5 text-emerald-500" />
-                                  <span className="font-bold truncate max-w-[150px]">{task.proofFile}</span>
-                                </div>
-                              )}
-
-                              <div className="flex justify-between items-center gap-2 mt-1.5 pt-2 border-t border-slate-200">
-                                <span className="text-[9px] text-slate-400">確認後即計入貢獻</span>
-                                <button
-                                  onClick={() => verifyTask(task.id)}
-                                  className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-[9px] px-2.5 py-1.5 rounded transition flex items-center gap-1 shadow-sm"
-                                >
-                                  <Check className="w-3 h-3" />
-                                  <span>驗證屬實</span>
-                                </button>
-                              </div>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-
-                    {/* SVG 圓餅圖貢獻度 */}
-                    <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-                      <h3 className="font-bold text-xs text-slate-800 flex items-center gap-2 mb-4">
-                        <BarChart2 className="w-4 h-4 text-emerald-500" />
-                        <span>組員真實貢獻比例圖 (核實制)</span>
-                      </h3>
-
-                      {totalCompletedDiffSum === 0 ? (
-                        <div className="text-center py-10 text-slate-400">
-                          <AlertCircle className="w-8 h-8 text-amber-500/30 mx-auto mb-2" />
-                          <p className="font-bold text-slate-600">目前尚無核實通過的貢獻</p>
-                          <p className="text-[10px] text-slate-400 mt-1 max-w-[220px] mx-auto leading-relaxed">
-                            組員提交成果後，必須經由隊友在匿名審查區按下「驗證屬實」，其貢獻比例才會正式解鎖出現在此圓餅圖中！
-                          </p>
-                        </div>
-                      ) : (
-                        <div className="flex flex-col items-center gap-5">
-
-                          {/* SVG Donut Chart (改為純白圓心) */}
-                          <div className="relative w-36 h-36 animate-fadeIn">
-                            <svg viewBox="-1 -1 2 2" className="transform -rotate-90 w-full h-full">
-                              {chartData.map((d, index) => {
-                                const percent = d.percentage / 100;
-                                const [startX, startY] = getCoordinatesForPercent(d.startAngle / 360);
-                                const [endX, endY] = getCoordinatesForPercent(d.endAngle / 360);
-                                const largeArcFlag = percent > 0.5 ? 1 : 0;
-
-                                const pathData = [
-                                  `M ${startX} ${startY}`,
-                                  `A 1 1 0 ${largeArcFlag} 1 ${endX} ${endY}`,
-                                  `L 0 0`
-                                ].join(' ');
-
-                                return (
-                                  <path
-                                    key={d.id}
-                                    d={pathData}
-                                    fill={d.color}
-                                    className="transition-all duration-300 hover:opacity-85 cursor-pointer"
-                                    title={`${d.name}: ${d.percentage}%`}
-                                  />
-                                );
-                              })}
-                              <circle cx="0" cy="0" r="0.65" fill="#ffffff" />
-                            </svg>
-
-                            <div className="absolute inset-0 flex flex-col justify-center items-center pointer-events-none animate-fadeIn">
-                              <span className="text-[9px] text-slate-400">已解鎖貢獻</span>
-                              <span className="text-base font-extrabold text-emerald-600">{totalCompletedDiffSum.toFixed(1)} W</span>
-                            </div>
+                          <label class="block text-xs font-black text-slate-500 mb-1">👥 組員總人數設定（含組長，2-8 人）</label>
+                          <div class="flex items-center gap-3 mt-1.5">
+                            <input id="member-count-range" type="range" min="2" max="8" value="4" class="w-full accent-indigo-600">
+                            <span id="member-count-badge" class="text-xs font-black bg-slate-100 text-slate-700 px-3 py-1.5 rounded-lg border border-slate-200">4 人</span>
                           </div>
                         </div>
-                      )}
+                    </div>
+                </div>
 
-                      {/* 人員進度細目 */}
-                      <div className="w-full flex flex-col gap-2.5 mt-5">
-                        {contributionData.map(d => {
-                          const matchingChartData = chartData.find(c => c.id === d.id);
-                          const percentage = matchingChartData ? matchingChartData.percentage : 0;
-                          const color = matchingChartData ? matchingChartData.color : '#94a3b8';
+                <!-- 智慧進度時序 -->
+                <div id="milestone-box" class="bg-slate-50 border border-slate-200 rounded-2xl p-4.5 hidden">
+                    <h4 class="text-xs font-black text-slate-700 mb-3 flex items-center gap-1">⏱️ ProjectHero 智慧進度時序規劃建議</h4>
+                    <div id="milestone-list" class="grid gap-3"></div>
+                </div>
 
-                          return (
-                            <div key={d.id} className="bg-slate-50/50 border border-slate-200 rounded-xl p-3 flex flex-col gap-1 shadow-sm">
+                <div class="flex justify-end pt-4 border-t border-slate-100">
+                    <button onclick="tryGoToStep('step_assignment')" class="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-5 py-2.5 rounded-xl transition flex items-center gap-1 shadow-md shadow-indigo-600/15">
+                        <span>下一步：作業標準</span>
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"></path></svg>
+                    </button>
+                </div>
+            </section>
 
-                              <div className="flex justify-between items-center">
-                                <div className="flex items-center gap-2">
-                                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: color }}></span>
-                                  {d.customAvatarUrl ? (
-                                    <img src={d.customAvatarUrl} className="w-5 h-5 rounded-full object-cover border border-slate-200" />
-                                  ) : (
-                                    <span className="text-xs">{d.avatar}</span>
-                                  )}
-                                  <span className="text-xs font-bold text-slate-700">{d.name}</span>
-                                </div>
-                                <span className="text-xs font-extrabold text-slate-800">{percentage}%</span>
-                              </div>
+            <!-- 頁面二: 作業與規範 -->
+            <section id="pane_assignment" class="step-pane flex flex-col gap-6 animate-fadeIn hidden">
+                <div class="border-b border-slate-100 pb-4">
+                    <span class="text-xs bg-indigo-50 text-indigo-600 border border-indigo-100 px-3 py-1 rounded-full font-bold">頁面 2 / 5</span>
+                    <h2 class="text-xl font-black text-slate-800 mt-2.5 flex items-center gap-2">📄 貼上或上傳作業評分標準</h2>
+                </div>
 
-                              <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden mt-1 border border-slate-100">
-                                <div
-                                  className="h-full rounded-full transition-all duration-500"
-                                  style={{ width: `${percentage}%`, backgroundColor: color }}
-                                />
-                              </div>
-
-                              <div className="flex flex-col gap-1 text-[9px] text-slate-500 mt-2.5 pt-1.5 border-t border-slate-200/60">
-                                <div className="flex justify-between items-center">
-                                  <span className="text-emerald-600 font-semibold">🟢 已核實解鎖權重:</span>
-                                  <span className="font-extrabold text-slate-700">{d.completedDiff.toFixed(1)} / {d.totalDiff} W</span>
-                                </div>
-
-                                {d.pendingDiff > 0 && (
-                                  <div className="flex justify-between items-center text-indigo-600 font-bold animate-pulse">
-                                    <span>⏳ 待盲測核實中權重:</span>
-                                    <span>+{d.pendingDiff.toFixed(1)} W</span>
-                                  </div>
-                                )}
-                              </div>
-
-                            </div>
-                          );
-                        })}
-                      </div>
-
+                <div class="grid gap-5">
+                    <div>
+                        <label class="block text-xs font-black text-slate-500 mb-1.5">📎 上傳老師發放的作業 PDF / 說明規格書</label>
+                        <div class="border-2 border-dashed border-slate-200 hover:border-indigo-400 bg-slate-50/50 rounded-2xl p-6 text-center transition cursor-pointer relative">
+                            <input type="file" id="assign-file-input" class="absolute inset-0 opacity-0 cursor-pointer">
+                            <svg class="w-7 h-7 text-slate-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                            <p id="file-upload-status" class="text-xs text-slate-500 font-bold">點擊或拖曳檔案至此處模擬上傳 (支援 PDF, DOCX, PNG)</p>
+                        </div>
                     </div>
 
-                  </div>
+                    <div>
+                        <label class="block text-xs font-black text-slate-500 mb-1">✍️ 或直接複製貼上「學校評分作業規範內容」</label>
+                        <textarea id="assign-text" placeholder="範例：期末需繳交 15 頁書面研究報告與 10 分鐘口頭發表，內容必須涵蓋問卷發放數據統計，且排版需美化美觀..." class="w-full text-sm bg-slate-50 border border-slate-200 rounded-xl p-3 h-32 focus:outline-none focus:border-indigo-500 focus:bg-white transition resize-none"></textarea>
+                    </div>
+                </div>
+
+                <div class="flex justify-between pt-4 border-t border-slate-100">
+                    <button onclick="switchStep('step_project')" class="bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-1">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"></path></svg>
+                        <span>返回</span>
+                    </button>
+                    <button onclick="tryGoToStep('step_team')" class="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-5 py-2.5 rounded-xl transition flex items-center gap-1 shadow-md shadow-indigo-600/15">
+                        <span>下一步：組員專長</span>
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"></path></svg>
+                    </button>
+                </div>
+            </section>
+
+            <!-- 頁面三: 組員專長 -->
+            <section id="pane_team" class="step-pane flex flex-col gap-6 animate-fadeIn hidden">
+                <div class="border-b border-slate-100 pb-4">
+                    <span class="text-xs bg-indigo-50 text-indigo-600 border border-indigo-100 px-3 py-1 rounded-full font-bold">頁面 3 / 5</span>
+                    <h2 class="text-xl font-black text-slate-800 mt-2.5 flex items-center gap-2">👥 設定組員名單與個人專長</h2>
+                </div>
+
+                <div class="bg-amber-50 border border-amber-100 p-4 rounded-xl flex items-start gap-3">
+                    <span class="text-base mt-0.5">⚠️</span>
+                    <p class="text-[11px] text-amber-800 leading-relaxed font-bold">
+                        <strong>防躺分前置設定：</strong> 請在此指定每位組員擅長的技能分工。如果所有人都只想「全能配合／聽口令」或不想做事，後續的智慧分配模組將會啟動「負載強迫對稱法」，強制在多維度派工時予以工作平衡！
+                    </p>
+                </div>
+
+                <!-- 系統隨機選組長控制工具欄 -->
+                <div class="flex justify-between items-center bg-slate-50 border border-slate-200/60 rounded-xl p-3">
+                    <span class="text-xs font-bold text-slate-500">👑 組長快捷設定工具：</span>
+                    <button onclick="autoPickLeader()" class="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-600 border border-indigo-100 px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 shadow-sm">
+                        <span>🎲 系統隨機選組長</span>
+                    </button>
+                </div>
+
+                <div id="members-container" class="grid gap-3">
+                    <!-- 動態渲染組員 -->
+                </div>
+
+                <div class="flex justify-between pt-4 border-t border-slate-100">
+                    <button onclick="switchStep('step_assignment')" class="bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-1">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"></path></svg>
+                        <span>返回</span>
+                    </button>
+                    <button onclick="tryGoToStep('step_tasks')" class="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-5 py-2.5 rounded-xl transition flex items-center gap-1 shadow-md shadow-indigo-600/15">
+                        <span>下一步：工作分配</span>
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"></path></svg>
+                    </button>
+                </div>
+            </section>
+
+            <!-- 頁面四: 工作分配 -->
+            <section id="pane_tasks" class="step-pane flex flex-col gap-6 animate-fadeIn hidden">
+                <div class="border-b border-slate-100 pb-4">
+                    <span class="text-xs bg-indigo-50 text-indigo-600 border border-indigo-100 px-3 py-1 rounded-full font-bold">頁面 4 / 5</span>
+                    <h2 class="text-xl font-black text-slate-800 mt-2.5 flex items-center gap-2">🛠️ 精細拆解工作與公平派工</h2>
+                </div>
+
+                <!-- AI 生成 & 本地派工主控 -->
+                <div class="bg-gradient-to-r from-indigo-50 to-indigo-100/40 border border-indigo-100 rounded-2xl p-5">
+                    <div class="flex flex-col md:flex-row gap-4 items-center justify-between">
+                        <div class="text-xs text-slate-600">
+                          <p class="font-extrabold text-indigo-900 flex items-center gap-1.5">
+                            <span class="text-sm">🧠</span> 推薦：呼叫 Gemini AI 敏捷拆解與分配
+                          </p>
+                          <p class="mt-1">系統將自動剖析專案主題與作業評分大綱，將大專題解構為數個容易追溯的微型、具體任務。</p>
+                        </div>
+
+                        <div class="flex flex-wrap gap-2 w-full md:w-auto justify-end">
+                            <button onclick="handleLocalAllocationOnly()" class="text-xs bg-white hover:bg-slate-50 text-slate-700 font-bold px-3.5 py-2 rounded-xl transition border border-slate-200 shadow-sm">
+                                ⚖️ 僅執行負載平衡分配
+                            </button>
+                            <button id="ai-btn" onclick="handleAiDeconstructAndAllocate()" class="text-xs bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-4 py-2 rounded-xl transition flex items-center gap-1.5 shadow-md shadow-indigo-600/10">
+                                <span>✨ AI 智慧細分派工</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 手動建立任務 -->
+                <div class="bg-slate-50 border border-slate-200 rounded-2xl p-4">
+                    <p class="text-xs font-black text-slate-700 mb-2">➕ 您也可以在此「手動加開」微型任務：</p>
+                    <div class="grid grid-cols-1 md:grid-cols-12 gap-2">
+                        <input id="new-task-title" type="text" placeholder="輸入具體工作內容 (例如：發放問卷100份)" class="text-xs bg-white border border-slate-200 rounded-xl p-2.5 focus:outline-none md:col-span-5">
+                        <select id="new-task-category" class="text-xs bg-white border border-slate-200 rounded-xl p-2 focus:outline-none md:col-span-3">
+                            <option value="all">🔍 智慧判斷專長分類</option>
+                            <option value="data">📊 數據文獻類</option>
+                            <option value="ppt">🎨 PPT美化類</option>
+                            <option value="presentation">📢 報告演練類</option>
+                        </select>
+                        <select id="new-task-difficulty" class="text-xs bg-white border border-slate-200 rounded-xl p-2 focus:outline-none md:col-span-2">
+                            <option value="1">⭐ 簡單 (1點)</option>
+                            <option value="2" selected>⭐⭐ 中等 (2點)</option>
+                            <option value="3">⭐⭐⭐ 困難 (3點)</option>
+                        </select>
+                        <button onclick="addNewTaskHand()" class="bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold rounded-xl p-2.5 transition flex items-center justify-center gap-1 md:col-span-2">
+                            <span>新增任務</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 任務列表 -->
+                <div id="tasks-list" class="grid gap-2.5 max-h-96 overflow-y-auto pr-1">
+                    <!-- 動態渲染任務 -->
+                </div>
+
+                <div class="flex justify-between pt-4 border-t border-slate-100">
+                    <button onclick="switchStep('step_team')" class="bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-1">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"></path></svg>
+                        <span>返回</span>
+                    </button>
+                    <button onclick="tryGoToStep('step_tracking')" class="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-5 py-2.5 rounded-xl transition flex items-center gap-1 shadow-md shadow-indigo-600/15">
+                        <span>下一步：看板與防躺分監督</span>
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"></path></svg>
+                    </button>
+                </div>
+            </section>
+
+            <!-- 頁面五: 看板監督 (互動看板與 Canvas 圖表) -->
+            <section id="pane_tracking" class="step-pane flex flex-col gap-8 animate-fadeIn hidden">
+                
+                <!-- 當前登入身份 -->
+                <div class="bg-slate-900 text-slate-100 p-4 rounded-2xl shadow-md flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div class="flex items-center gap-2.5">
+                        <span class="text-xl">🎭</span>
+                        <div>
+                            <h4 class="text-xs font-black tracking-wide text-slate-200">當前模擬登入組員切換</h4>
+                            <p class="text-[10px] text-slate-400">點擊右側下拉單更換登入人，即可查驗「自己提交」或「替隊友盲測審核」！</p>
+                        </div>
+                    </div>
+                    <div>
+                        <select id="user-simulator-select" onchange="switchUserContext(this.value)" class="text-xs bg-slate-800 text-white border border-slate-700 rounded-xl p-2 font-bold focus:outline-none focus:ring-1 focus:ring-indigo-500"></select>
+                    </div>
+                </div>
+
+                <!-- 敏捷 Kanban 看板 -->
+                <div>
+                    <h3 class="text-sm font-black text-slate-700 mb-3.5 flex items-center gap-1">📋 專案實時追蹤看板</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        
+                        <!-- 1. 待處理 (Todo) -->
+                        <div class="bg-slate-50 border border-slate-200 rounded-2xl p-3 flex flex-col gap-2.5 min-h-[260px]">
+                            <div class="flex items-center justify-between border-b border-slate-200 pb-2 px-1">
+                                <span class="text-xs font-black text-slate-700">📌 待處理</span>
+                                <span id="todo-count" class="text-[10px] font-mono font-bold bg-slate-200 px-2 py-0.5 rounded-full text-slate-600">0</span>
+                            </div>
+                            <div id="col-todo" class="flex flex-col gap-2 flex-1"></div>
+                        </div>
+
+                        <!-- 2. 審查中 (Review) -->
+                        <div class="bg-amber-50/50 border border-amber-200/60 rounded-2xl p-3 flex flex-col gap-2.5 min-h-[260px]">
+                            <div class="flex items-center justify-between border-b border-amber-200 pb-2 px-1">
+                                <span class="text-xs font-black text-amber-800">⏳ 待核查 (雙重認可)</span>
+                                <span id="review-count" class="text-[10px] font-mono font-bold bg-amber-100 px-2 py-0.5 rounded-full text-amber-700">0</span>
+                            </div>
+                            <div id="col-review" class="flex flex-col gap-2 flex-1"></div>
+                        </div>
+
+                        <!-- 3. 已完成 (Done) -->
+                        <div class="bg-emerald-50/40 border border-emerald-200/60 rounded-2xl p-3 flex flex-col gap-2.5 min-h-[260px]">
+                            <div class="flex items-center justify-between border-b border-emerald-200 pb-2 px-1">
+                                <span class="text-xs font-black text-emerald-800">✅ 確定完成 (已核查)</span>
+                                <span id="done-count" class="text-[10px] font-mono font-bold bg-emerald-100 px-2 py-0.5 rounded-full text-emerald-700">0</span>
+                            </div>
+                            <div id="col-done" class="flex flex-col gap-2 flex-1"></div>
+                        </div>
+
+                    </div>
+                </div>
+
+                <hr class="border-slate-100">
+
+                <!-- 零信任統計與 Canvas 視覺圖表 -->
+                <div class="grid grid-cols-1 md:grid-cols-12 gap-6 items-center">
+                    
+                    <!-- Canvas 甜甜圈物理圖表區 -->
+                    <div class="md:col-span-5 flex flex-col items-center">
+                        <h4 class="text-xs font-black text-slate-700 mb-3">📊 實時真實貢獻度（已通過核查）</h4>
+                        <div class="relative w-48 h-48 bg-slate-50 rounded-2xl flex items-center justify-center p-2 border border-slate-100 shadow-inner">
+                            <canvas id="contributionCanvas" class="w-full h-full cursor-pointer"></canvas>
+                        </div>
+                        <p class="text-[10px] text-slate-400 mt-2 font-medium">💡 滑鼠游標滑過圓餅區塊可顯示名單細節</p>
+                    </div>
+
+                    <!-- 貢獻詳情名單與評分 -->
+                    <div class="md:col-span-7 flex flex-col gap-3">
+                        <h4 class="text-xs font-black text-slate-700">🕵️ 零信任防躺分貢獻明細列表</h4>
+                        <div id="slacker-report-list" class="flex flex-col gap-2.5">
+                            <!-- 動態組員分數條 -->
+                        </div>
+                    </div>
 
                 </div>
-              )}
 
+                <div class="flex justify-between pt-4 border-t border-slate-100">
+                    <button onclick="switchStep('step_tasks')" class="bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-1">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"></path></svg>
+                        <span>返回調整工作</span>
+                    </button>
+                    <div class="text-[11px] text-emerald-600 font-bold flex items-center gap-1.5 bg-emerald-50 px-3 py-2 rounded-xl border border-emerald-100 shadow-sm">
+                        <span>🛡️ 零信任防作弊模式已全時開啟</span>
+                    </div>
+                </div>
+
+            </section>
+
+        </div>
+    </main>
+
+    <!-- 彈窗 (Modal)：提交實證 -->
+    <div id="proof-modal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm items-center justify-center z-50 p-4 hidden">
+        <div class="bg-white rounded-3xl border border-slate-200 max-w-md w-full p-6 shadow-2xl animate-scaleUp">
+            
+            <div class="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
+                <h3 class="text-sm font-black text-slate-800">📤 提交工作成果佐證</h3>
+                <button onclick="closeProofModal()" class="text-slate-400 hover:text-slate-600 p-1">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
             </div>
-          )}
+
+            <div class="flex flex-col gap-4">
+                <div>
+                    <p class="text-[11px] font-bold text-slate-400">當前交付項目：</p>
+                    <p id="modal-task-title" class="text-xs font-black text-slate-800 bg-slate-50 border border-slate-200 p-2.5 rounded-xl mt-1"></p>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-black text-slate-500 mb-1">💡 工作成果說明 / 遇到的挑戰</label>
+                    <textarea id="modal-proof-desc" required placeholder="請簡單描述此子工作完成進度，例如：問卷已回收並產出圖表，已放置雲端..." class="w-full text-xs bg-slate-50 border border-slate-200 rounded-xl p-2.5 h-16 focus:outline-none focus:border-indigo-500 focus:bg-white transition resize-none"></textarea>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-black text-slate-500 mb-1">🔗 佐證成果檔案類型</label>
+                    <div class="grid grid-cols-2 gap-2 mt-1">
+                        <button onclick="switchProofType('file')" id="btn-proof-file" class="text-xs font-bold p-2 rounded-xl border transition flex items-center justify-center gap-1.5 bg-indigo-50 border-indigo-500 text-indigo-600">
+                            <span>上傳實體佐證圖</span>
+                        </button>
+                        <button onclick="switchProofType('link')" id="btn-proof-link" class="text-xs font-bold p-2 rounded-xl border transition flex items-center justify-center gap-1.5 bg-white border-slate-200 text-slate-600">
+                            <span>雲端超連結</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div id="proof-input-link-wrapper" class="hidden">
+                    <label class="block text-xs font-black text-slate-500 mb-1">雲端成果超連結 (Google Drive, Canva 等)</label>
+                    <input id="modal-proof-link" type="url" placeholder="https://docs.google.com/..." class="w-full text-xs bg-slate-50 border border-slate-200 rounded-xl p-2.5 focus:outline-none">
+                </div>
+
+                <div id="proof-input-file-wrapper">
+                    <label class="block text-xs font-black text-slate-500 mb-1">附加電腦截圖或文字佐證報告</label>
+                    <div class="border-2 border-dashed border-slate-200 rounded-xl p-3.5 text-center bg-slate-50 relative cursor-pointer">
+                        <input type="file" id="modal-proof-file" class="absolute inset-0 opacity-0 cursor-pointer">
+                        <p id="modal-proof-file-status" class="text-[11px] text-slate-500 font-bold">點選夾帶問卷統計圖、程式碼截圖或報告</p>
+                    </div>
+                </div>
+
+                <div class="flex gap-2 justify-end pt-3 border-t border-slate-100">
+                    <button onclick="closeProofModal()" class="bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold px-4 py-2 rounded-xl transition">
+                        取消
+                    </button>
+                    <button onclick="submitWorkProof()" class="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-4 py-2 rounded-xl transition shadow-md shadow-indigo-600/15">
+                        🚀 送出進行同儕盲測
+                    </button>
+                </div>
+            </div>
 
         </div>
-      </main>
-
-      {/* 底部備註 */}
-      <footer className="max-w-4xl mx-auto text-center text-[11px] text-slate-400 mt-8 leading-relaxed">
-        <p>© 2026 免費仔退散 ProjectHero • 專題分組防躺分神器</p>
-        <p className="mt-0.5">系統核心依據「物理實證軌跡 (PoW)」與「同儕匿名核實」兩重驗證，將貢獻度化為客觀分數。</p>
-      </footer>
-
-      {/* 彈窗：上傳工作實證 (明亮磨砂質感) */}
-      {activeTaskForProof && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex justify-center items-center p-4 z-50 animate-fadeIn">
-          <div className="bg-white border border-slate-200 rounded-2xl max-w-md w-full p-6 relative shadow-2xl">
-            <button
-              onClick={() => {
-                setActiveTaskForProof(null);
-                setProofAttachedFile(null);
-              }}
-              className="absolute top-4 right-4 text-slate-400 hover:text-slate-800 transition"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <h3 className="text-base font-bold text-slate-800 mb-2 flex items-center gap-2">
-              <Upload className="w-5 h-5 text-indigo-600" />
-              <span>呈報工作實證 🚀</span>
-            </h3>
-
-            <p className="text-xs text-slate-500 mb-4">
-              您正在為任務 <span className="text-indigo-600 font-bold">「{activeTaskForProof.title}」</span> 提交完成證明。
-            </p>
-
-            <form onSubmit={submitWorkProof} className="flex flex-col gap-4">
-
-              {/* 文字描述 */}
-              <div className="flex flex-col gap-1">
-                <label className="text-xs text-slate-500 font-bold">1. 具體完成了什麼？ (文字說明)</label>
-                <textarea
-                  rows="2"
-                  value={proofInputText}
-                  onChange={(e) => setProofInputText(e.target.value)}
-                  placeholder="請具體說明成果。如：已翻譯完文獻第二節、並手繪了關係圖草稿..."
-                  className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-800 focus:outline-none focus:border-indigo-500 focus:bg-white transition-all"
-                  required
-                />
-              </div>
-
-              {/* 實證附加類型選擇器 */}
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs text-slate-500 font-bold">2. 選擇實證佐證方式 (可選實體檔案或雲端連結)</label>
-                <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-lg border border-slate-250">
-                  <button
-                    type="button"
-                    onClick={() => setProofTypeSelection('file')}
-                    className={`py-1.5 text-xs font-bold rounded-md transition flex items-center justify-center gap-1 ${
-                      proofTypeSelection === 'file'
-                        ? 'bg-indigo-600 text-white shadow-sm'
-                        : 'text-slate-500 hover:text-slate-850'
-                    }`}
-                  >
-                    <ImageIcon className="w-3.5 h-3.5" />
-                    <span>上傳圖片 / 本地檔案</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setProofTypeSelection('link')}
-                    className={`py-1.5 text-xs font-bold rounded-md transition flex items-center justify-center gap-1 ${
-                      proofTypeSelection === 'link'
-                        ? 'bg-indigo-600 text-white shadow-sm'
-                        : 'text-slate-500 hover:text-slate-850'
-                    }`}
-                  >
-                    <Paperclip className="w-3.5 h-3.5" />
-                    <span>提供雲端路徑連結</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* 管道 A: 本地檔案 or 圖片上傳 */}
-              {proofTypeSelection === 'file' && (
-                <div className="flex flex-col gap-1 animate-fadeIn">
-                  <div className="border-2 border-dashed border-slate-250 hover:border-indigo-500 rounded-lg p-4 text-center cursor-pointer relative transition bg-slate-50/50 group">
-                    <input
-                      type="file"
-                      onChange={handleProofFileAttached}
-                      className="absolute inset-0 opacity-0 cursor-pointer"
-                      accept="image/*,.pdf,.doc,.docx,.ppt,.pptx"
-                    />
-                    <Upload className="w-6 h-6 mx-auto text-slate-400 group-hover:text-indigo-500 transition mb-1.5" />
-                    {proofAttachedFile ? (
-                      <div className="text-xs text-emerald-600 font-bold flex items-center justify-center gap-1">
-                        <Check className="w-3.5 h-3.5" />
-                        <span className="truncate max-w-[200px]">{proofAttachedFile}</span>
-                      </div>
-                    ) : (
-                      <p className="text-[11px] text-slate-400 font-semibold">
-                        點選附加完成草稿圖、實驗照片或 PDF 證明
-                      </p>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* 管道 B: 雲端路徑連結 */}
-              {proofTypeSelection === 'link' && (
-                <div className="flex flex-col gap-1 animate-fadeIn">
-                  <input
-                    type="url"
-                    value={proofInputUrl}
-                    onChange={(e) => setProofInputUrl(e.target.value)}
-                    placeholder="請貼上你的雲端硬碟、Google Slides/Docs 共享連結"
-                    className="bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs text-slate-800 focus:outline-none focus:border-indigo-500"
-                    required={proofTypeSelection === 'link'}
-                  />
-                </div>
-              )}
-
-              <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-3 text-[11px] text-slate-600 leading-relaxed">
-                📢 <strong>拒絕口頭躺分：</strong>提交實物證明或檔案後，系統將隨機抽點 2 位成員確認。盲測核實無誤，此任務權重才正式鎖定計入你的貢獻比例中。
-              </div>
-
-              <div className="flex justify-end gap-3 mt-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActiveTaskForProof(null);
-                    setProofAttachedFile(null);
-                  }}
-                  className="bg-slate-50 hover:bg-slate-100 text-slate-500 text-xs px-4 py-2 rounded-lg font-bold border border-slate-200"
-                >
-                  取消
-                </button>
-                <button
-                  type="submit"
-                  className="bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white text-xs px-4 py-2 rounded-lg font-bold shadow-md"
-                >
-                  確認上傳送審
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
     </div>
-  );
-}
 
-// 實證看板卡片組件 (明亮質雅重塑)
-function TaskTrackingCard({ task, members, currentUser, onUploadProof, onStatusChange }) {
-  const assigneeObj = members.find(m => m.id === task.assignee);
-  const isMine = task.assignee === currentUser;
+    <!-- 腳部 -->
+    <footer class="mt-16 text-center text-[11px] text-slate-400">
+        <p>© 2026 ProjectHero 免費仔退散. 專為高校/大專探究與實作敏捷開發打造</p>
+    </footer>
 
-  const getDiffColor = (diff) => {
-    if (diff === 3) return 'text-rose-600 bg-rose-50 border-rose-100';
-    if (diff === 2) return 'text-amber-600 bg-amber-50 border-amber-100';
-    return 'text-emerald-600 bg-emerald-50 border-emerald-100';
-  };
+    <!-- JavaScript 核心系統邏輯 -->
+    <script>
+        // --- 預定義專長標籤 ---
+        const SPECIALTY_OPTIONS = [
+            { value: 'all', label: '⚡ 全能配合/聽從指揮', icon: '🏃' },
+            { value: 'data', label: '📊 數據蒐集/文獻查閱', icon: '🔍' },
+            { value: 'ppt', label: '🎨 PPT排版/美術美化', icon: '💻' },
+            { value: 'presentation', label: '📢 報告口條/上台發表', icon: '🗣️' }
+        ];
 
-  const handleForbiddenAction = () => {
-    const myName = members.find(m => m.id === currentUser)?.name || '我';
-    const targetName = assigneeObj?.name || '他人';
-    alert(`🔒 安全存取限制作：\n您的綁定身份為「${myName}」，該任務負責人為「${targetName}」。您無法替他人開始任務、上傳實證或推進看板狀態，這項安全隔離保障了進度真實性。`);
-  };
+        // --- 全域狀態模組 (In-Memory) ---
+        let currentStepId = 'step_project';
+        let maxUnlockedStepIdx = 0;
 
-  return (
-    <div className={`border rounded-xl p-3.5 bg-white transition-all duration-200 flex flex-col gap-2.5 shadow-sm hover:shadow-md border-slate-200 ${
-      task.status === 'done' ? 'border-emerald-200 bg-emerald-50/10' : 'hover:border-slate-350'
-    }`}>
+        let projectName = '';
+        let projectDesc = '';
+        let projectDeadline = '';
+        let memberCount = 4;
+        let assignmentFile = null;
+        let assignmentText = '';
 
-      {/* 標題與指派者 */}
-      <div className="flex flex-col gap-1">
-        <h4 className="font-extrabold text-[11px] text-slate-800 leading-snug line-clamp-2">
-          {task.title}
-        </h4>
+        let members = [
+            { id: 'm1', name: '陳小東', isLeader: true, avatar: '🦁', customAvatarUrl: null, specialty: 'presentation' },
+            { id: 'm2', name: '林小明', isLeader: false, avatar: '🐼', customAvatarUrl: null, specialty: 'data' },
+            { id: 'm3', name: '黃小華', isLeader: false, avatar: '🦊', customAvatarUrl: null, specialty: 'ppt' },
+            { id: 'm4', name: '張小美', isLeader: false, avatar: '🦥', customAvatarUrl: null, specialty: 'all' }
+        ];
 
-        <div className="flex items-center gap-1.5 mt-1">
-          {assigneeObj?.customAvatarUrl ? (
-            <img src={assigneeObj.customAvatarUrl} className="w-5 h-5 rounded-full object-cover border border-slate-200" />
-          ) : (
-            <span className="text-sm">{assigneeObj?.avatar}</span>
-          )}
-          <span className="text-[9px] text-slate-500 font-bold">{assigneeObj?.name}</span>
-          {isMine && (
-            <span className="text-[8px] bg-indigo-50 border border-indigo-100 text-indigo-600 px-1 py-0.2 rounded font-extrabold">
-              我
-            </span>
-          )}
-        </div>
-      </div>
+        let currentUser = 'm1';
+        let tasks = [];
 
-      {/* 難度、截止日與審核狀態 */}
-      <div className="flex flex-col gap-1.5 pt-1.5 border-t border-slate-50">
-        <div className="flex flex-wrap items-center gap-1">
-          <span className={`text-[8px] font-extrabold px-1.5 py-0.2 rounded border ${getDiffColor(task.difficulty)}`}>
-            W{task.difficulty}
-          </span>
+        // 任務提交實證暫存
+        let activeTaskForProof = null;
+        let activeProofType = 'file';
+        let attachedProofFileName = null;
 
-          {task.status === 'review' && (
-            <span className="text-[8px] font-extrabold px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-600 border border-indigo-100 flex items-center gap-0.5 animate-pulse">
-              <span>審核中 ({task.verifiedBy.length}/2)</span>
-            </span>
-          )}
+        // Emojis 頭像輪播庫
+        const avatarEmojis = ['🦁', '🐼', '🦊', '🦥', '🐯', '🐸', '🐨', '🐙', '🦄', '🐰'];
 
-          {task.status === 'done' && (
-            <span className="text-[8px] font-extrabold px-1.5 py-0.2 rounded bg-emerald-50 text-emerald-600 border border-emerald-100">
-              已驗證
-            </span>
-          )}
-        </div>
+        // --- 步驟列表 ---
+        const stepOrder = ['step_project', 'step_assignment', 'step_team', 'step_tasks', 'step_tracking'];
 
-        {/* 顯示子任務 Deadline */}
-        <span className="text-[8px] text-slate-400 flex items-center gap-1">
-          <Calendar className="w-2.5 h-2.5 text-slate-400" />
-          <span>截止: {task.deadline}</span>
-        </span>
-      </div>
+        // ==================== 初始化 ====================
+        window.addEventListener('load', () => {
+            initDefaultDates();
+            renderTeamSetup();
+            initProjectInputs();
+            initCanvas();
+        });
 
-      {/* 操作按鈕 */}
-      <div className="mt-1 border-t border-slate-100 pt-1.5 flex justify-end">
-        {isMine ? (
-          <>
-            {task.status === 'todo' && (
-              <button
-                onClick={() => onStatusChange('in_progress')}
-                className="w-full bg-slate-50 hover:bg-slate-100 text-slate-700 text-[9px] py-1 px-1.5 rounded-lg border border-slate-200 font-bold transition flex items-center justify-center gap-0.5 shadow-sm"
-              >
-                <span>開始動手做</span>
-                <ChevronRight className="w-3 h-3" />
-              </button>
-            )}
+        function initDefaultDates() {
+            const today = new Date();
+            const defaultDead = new Date(today.setDate(today.getDate() + 21));
+            projectDeadline = defaultDead.toISOString().split('T')[0];
+            document.getElementById('proj-deadline').value = projectDeadline;
+            updateDeadlineDisplay();
+        }
 
-            {task.status === 'in_progress' && (
-              <button
-                onClick={onUploadProof}
-                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-[9px] py-1 px-1.5 rounded-lg font-bold transition flex items-center justify-center gap-1 shadow-md"
-              >
-                <Upload className="w-3 h-3" />
-                <span>上傳工作實證</span>
-              </button>
-            )}
+        function initProjectInputs() {
+            document.getElementById('proj-name').addEventListener('input', (e) => {
+                projectName = e.target.value;
+                document.getElementById('welcome-banner').classList.add('hidden');
+                updateDeadlineDisplay();
+            });
+            document.getElementById('proj-desc').addEventListener('input', (e) => {
+                projectDesc = e.target.value;
+            });
+            document.getElementById('proj-deadline').addEventListener('change', (e) => {
+                projectDeadline = e.target.value;
+                updateDeadlineDisplay();
+            });
+            document.getElementById('member-count-range').addEventListener('input', (e) => {
+                adjustMemberCount(parseInt(e.target.value));
+            });
 
-            {task.status === 'review' && (
-              <div className="w-full text-center text-[8px] text-slate-400 italic py-1 bg-slate-50 border border-slate-100 rounded-lg flex items-center justify-center gap-1">
-                <Lock className="w-2.5 h-2.5" />
-                <span>已鎖定 審核中...</span>
-              </div>
-            )}
-          </>
-        ) : (
-          <>
-            {task.status !== 'done' && (
-              <button
-                onClick={handleForbiddenAction}
-                className="w-full bg-slate-50 text-slate-400 text-[9px] py-1 px-1.5 rounded-lg border border-slate-200 font-bold flex items-center justify-center gap-1 cursor-not-allowed hover:bg-rose-50 hover:text-rose-500 hover:border-rose-100 transition shadow-sm"
-              >
-                <Lock className="w-3 h-3 text-slate-400" />
-                <span>非本人任務</span>
-              </button>
-            )}
-            {task.status === 'done' && (
-              <span className="text-[8px] text-slate-400 italic block text-center w-full py-1">已被安全核實</span>
-            )}
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
+            // 作業標準
+            document.getElementById('assign-file-input').addEventListener('change', (e) => {
+                if(e.target.files && e.target.files[0]) {
+                    assignmentFile = e.target.files[0].name;
+                    document.getElementById('file-upload-status').innerText = `✅ 已載入外部規格：${assignmentFile}`;
+                    document.getElementById('file-upload-status').classList.add('text-emerald-600');
+                }
+            });
+            document.getElementById('assign-text').addEventListener('input', (e) => {
+                assignmentText = e.target.value;
+            });
+
+            // 實證上傳
+            document.getElementById('modal-proof-file').addEventListener('change', (e) => {
+                if(e.target.files && e.target.files[0]) {
+                    attachedProofFileName = e.target.files[0].name;
+                    document.getElementById('modal-proof-file-status').innerText = `✅ 已選取佐證：${attachedProofFileName}`;
+                    document.getElementById('modal-proof-file-status').className = "text-[11px] text-emerald-600 font-bold";
+                }
+            });
+        }
+
+        // ==================== 倒計時與進度規劃 ====================
+        function updateDeadlineDisplay() {
+            const today = new Date(new Date().toISOString().split('T')[0]);
+            const dl = new Date(projectDeadline);
+            const diffTime = dl - today;
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+            const countdownText = document.getElementById('countdown-text');
+            const milestoneBox = document.getElementById('milestone-box');
+            const milestoneList = document.getElementById('milestone-list');
+
+            if (isNaN(diffDays)) return;
+
+            if (diffDays < 0) {
+                countdownText.innerHTML = `<span class="text-rose-600">⚠️ 日期已過期，請重新調整</span>`;
+                milestoneBox.classList.add('hidden');
+            } else {
+                countdownText.innerHTML = `距離發表截止還剩：<strong class="text-indigo-600 font-black text-xs">${diffDays}</strong> 天`;
+                
+                if(projectName.trim() !== '') {
+                    milestoneBox.classList.remove('hidden');
+                    // 計算時序里程碑
+                    const step1Days = Math.ceil(diffDays * 0.3);
+                    const step2Days = Math.ceil(diffDays * 0.65);
+                    const step3Days = Math.ceil(diffDays * 0.9);
+
+                    const formatDateOffset = (days) => {
+                        const d = new Date();
+                        d.setDate(d.getDate() + days);
+                        return d.toISOString().split('T')[0];
+                    };
+
+                    const milestones = [
+                        { name: '📚 階段一：文獻研究與大綱鎖定', date: formatDateOffset(step1Days), desc: '組員在此階段應提交各自文獻收集點數' },
+                        { name: '📊 階段二：實證數據與問卷清洗完成', date: formatDateOffset(step2Days), desc: '圖表繪製人開始針對數據繪製 Canvas 或 Excel' },
+                        { name: '🎨 階段三：PPT排版美化與口頭錄音彩排', date: formatDateOffset(step3Days), desc: '進行最終校對與同儕盲測查驗評分' }
+                    ];
+
+                    milestoneList.innerHTML = milestones.map(m => `
+                        <div class="flex gap-2.5 items-start text-xs border-l-2 border-indigo-200 pl-3">
+                            <div class="flex-1">
+                                <p class="font-extrabold text-slate-800">${m.name}</p>
+                                <p class="text-[11px] text-slate-500 mt-0.5">${m.desc}</p>
+                            </div>
+                            <span class="text-[10px] font-mono bg-white px-2.5 py-0.5 border border-slate-200 rounded-md text-slate-600 font-bold shadow-sm">${m.date}</span>
+                        </div>
+                    `).join('');
+                } else {
+                    milestoneBox.classList.add('hidden');
+                }
+            }
+        }
+
+        // ==================== 一鍵清除與示範數據 ====================
+        function handleStartNewProject() {
+            projectName = '';
+            projectDesc = '';
+            initDefaultDates();
+            assignmentFile = null;
+            assignmentText = '';
+            
+            document.getElementById('proj-name').value = '';
+            document.getElementById('proj-desc').value = '';
+            document.getElementById('assign-text').value = '';
+            document.getElementById('file-upload-status').innerText = '點擊或拖曳檔案至此處模擬上傳 (支援 PDF, DOCX, PNG)';
+            document.getElementById('file-upload-status').className = 'text-xs text-slate-500 font-bold';
+            document.getElementById('welcome-banner').classList.remove('hidden');
+
+            adjustMemberCount(4);
+            document.getElementById('member-count-range').value = 4;
+
+            tasks = [];
+            maxUnlockedStepIdx = 0;
+            switchStep('step_project');
+            renderTasksSetup();
+            updateStepLocks();
+        }
+
+        function handleLoadDemoProject() {
+            projectName = '探究與實作：台北市減塑政策成效分析';
+            projectDesc = '研究台北市超商與飲料店減塑政策的實施成效，並進行問卷調查與數據統計。';
+            
+            const today = new Date();
+            const dl = new Date(today.setDate(today.getDate() + 21));
+            projectDeadline = dl.toISOString().split('T')[0];
+
+            assignmentFile = '台北市減塑專題說明書.pdf';
+            assignmentText = '作業評分規格：期末需繳交15頁書面報告與10分鐘口頭簡報，需包含問卷數據統計、可視化圖表。';
+
+            document.getElementById('proj-name').value = projectName;
+            document.getElementById('proj-desc').value = projectDesc;
+            document.getElementById('proj-deadline').value = projectDeadline;
+            document.getElementById('assign-text').value = assignmentText;
+            document.getElementById('file-upload-status').innerText = `✅ 已載入外部規格：${assignmentFile}`;
+            document.getElementById('file-upload-status').className = 'text-xs text-emerald-600 font-bold';
+            document.getElementById('welcome-banner').classList.add('hidden');
+
+            members = [
+                { id: 'm1', name: '陳小東', isLeader: true, avatar: '🦁', customAvatarUrl: null, specialty: 'presentation' },
+                { id: 'm2', name: '林小明', isLeader: false, avatar: '🐼', customAvatarUrl: null, specialty: 'data' },
+                { id: 'm3', name: '黃小華', isLeader: false, avatar: '🦊', customAvatarUrl: null, specialty: 'ppt' },
+                { id: 'm4', name: '張小美', isLeader: false, avatar: '🦥', customAvatarUrl: null, specialty: 'all' }
+            ];
+            memberCount = 4;
+            document.getElementById('member-count-range').value = 4;
+            document.getElementById('member-count-badge').innerText = `4 人`;
+
+            tasks = [
+                { id: 't1', title: '設計問卷、投放發收100份數據', assignee: 'm2', difficulty: 3, category: 'data', status: 'review', proofText: '完成回收115份有效問卷。', proofType: 'file', proofFile: '問卷後台_林小明.png', verifiedBy: ['m1'], allocationReason: '✨ 專長符合林小明的【數據蒐集】', deadline: getOffsetDateString(7) },
+                { id: 't2', title: '問卷數據審核與空白無效清洗', assignee: 'm4', difficulty: 2, category: 'all', status: 'done', proofText: '清洗22筆重複垃圾作答。', proofType: 'link', proofUrl: 'https://docs.google.com/sheets/1', verifiedBy: ['m2', 'm3'], allocationReason: '⚖️ 彈性調度 (張小美全能協助)', deadline: getOffsetDateString(9) },
+                { id: 't3', title: '減塑歷年文獻查閱與台北特規分析', assignee: 'm2', difficulty: 1, category: 'data', status: 'todo', proofText: '', proofUrl: '', verifiedBy: [], allocationReason: '✨ 專長符合林小明的【數據蒐集】', deadline: getOffsetDateString(11) },
+                { id: 't4', title: '數據可視化統計與圖表繪製', assignee: 'm3', difficulty: 2, category: 'ppt', status: 'todo', proofText: '', proofUrl: '', verifiedBy: [], allocationReason: '✨ 專長符合黃小華的【PPT排版】', deadline: getOffsetDateString(14) },
+                { id: 't5', title: 'PPT簡報美觀視覺排版設計', assignee: 'm3', difficulty: 2, category: 'ppt', status: 'todo', proofText: '', proofUrl: '', verifiedBy: [], allocationReason: '✨ 專長符合黃小華的【PPT排版】', deadline: getOffsetDateString(16) },
+                { id: 't6', title: '15頁完整書面報告排版彙整撰寫', assignee: 'm4', difficulty: 2, category: 'all', status: 'todo', proofText: '', proofUrl: '', verifiedBy: [], allocationReason: '⚖️ 彈性調度 (張小美全能協助)', deadline: getOffsetDateString(18) },
+                { id: 't7', title: '口頭演練簡報發表排練錄影', assignee: 'm1', difficulty: 2, category: 'presentation', status: 'todo', proofText: '', proofUrl: '', verifiedBy: [], allocationReason: '✨ 專長符合陳小東的【報告口條】', deadline: getOffsetDateString(19) },
+                { id: 't8', title: '心得與反思撰寫彙總報告', assignee: 'm1', difficulty: 2, category: 'presentation', status: 'todo', proofText: '', proofUrl: '', verifiedBy: [], allocationReason: '✨ 專長符合陳小東的【報告口條】', deadline: getOffsetDateString(20) }
+            ];
+
+            maxUnlockedStepIdx = 4;
+            switchStep('step_project');
+            renderTeamSetup();
+            renderTasksSetup();
+            updateDeadlineDisplay();
+            updateStepLocks();
+        }
+
+        function getOffsetDateString(offset) {
+            const d = new Date();
+            d.setDate(d.getDate() + offset);
+            return d.toISOString().split('T')[0];
+        }
+
+        // ==================== 頁面跳轉與防呆機制 ====================
+        function switchStep(stepId) {
+            currentStepId = stepId;
+            
+            // 切換 panel 顯示
+            document.querySelectorAll('.step-pane').forEach(el => el.classList.add('hidden'));
+            const targetPane = document.getElementById(`pane_${stepId.split('_')[1]}`);
+            if (targetPane) targetPane.classList.remove('hidden');
+
+            // 切換 Stepper 按鈕狀態樣式
+            const currentIdx = stepOrder.indexOf(stepId);
+            document.getElementById('progress-line').style.width = `${(currentIdx / (stepOrder.length - 1)) * 100}%`;
+
+            stepOrder.forEach((id, idx) => {
+                const btn = document.getElementById(`btn-${id}`);
+                const iconWrapper = btn.querySelector('.step-icon-wrapper');
+                const label = btn.querySelector('span');
+
+                if (idx < currentIdx) {
+                    // 已完成
+                    iconWrapper.className = "step-icon-wrapper w-9 h-9 rounded-full flex items-center justify-center border-2 bg-emerald-500 border-emerald-500 text-white shadow transition font-bold text-xs";
+                    iconWrapper.innerHTML = `✓`;
+                    label.className = "text-[10px] md:text-xs font-bold text-emerald-600";
+                } else if (idx === currentIdx) {
+                    // 當前頁
+                    iconWrapper.className = "step-icon-wrapper w-9 h-9 rounded-full flex items-center justify-center border-2 bg-indigo-600 border-indigo-500 text-white ring-4 ring-indigo-500/10 shadow-md transition font-bold text-xs";
+                    iconWrapper.innerHTML = idx + 1;
+                    label.className = "text-[10px] md:text-xs font-black text-indigo-600";
+                } else {
+                    // 未達頁
+                    const isLocked = idx > maxUnlockedStepIdx;
+                    iconWrapper.className = `step-icon-wrapper w-9 h-9 rounded-full flex items-center justify-center border-2 transition font-bold text-xs ${
+                        isLocked ? 'bg-slate-50 border-slate-200 text-slate-400' : 'bg-white border-slate-300 text-slate-600'
+                    }`;
+                    iconWrapper.innerHTML = isLocked ? `🔒` : idx + 1;
+                    label.className = `text-[10px] md:text-xs font-bold ${isLocked ? 'text-slate-400' : 'text-slate-600'}`;
+                }
+            });
+
+            // 進入最後看板頁時初始化 Canvas 與模擬資訊
+            if (stepId === 'step_tracking') {
+                initTrackingDashboard();
+            }
+        }
+
+        function validateStep(stepId) {
+            if (stepId === 'step_project') {
+                if (!projectName.trim()) {
+                    showBannerAlert('請先填寫「專題研究大標題」！');
+                    return false;
+                }
+                const today = new Date(new Date().toISOString().split('T')[0]);
+                const dl = new Date(projectDeadline);
+                if (dl - today < 0) {
+                    showBannerAlert('專案截止日期不可早於今天！');
+                    return false;
+                }
+            }
+            if (stepId === 'step_team') {
+                if (members.some(m => !m.name.trim())) {
+                    showBannerAlert('組員姓名不得為空白！');
+                    return false;
+                }
+                if (!members.some(m => m.isLeader)) {
+                    showBannerAlert('請指定一位小組組長！');
+                    return false;
+                }
+            }
+            if (stepId === 'step_tasks') {
+                if (tasks.length === 0) {
+                    showBannerAlert('請先新增至少一項細分任務！');
+                    return false;
+                }
+                if (tasks.some(t => !t.assignee)) {
+                    showBannerAlert('防躺分警報：存在尚未指派負責人的任務，請先分工！');
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        function tryGoToStep(targetStepId) {
+            const currentIdx = stepOrder.indexOf(currentStepId);
+            const targetIdx = stepOrder.indexOf(targetStepId);
+
+            if (targetIdx < currentIdx) {
+                switchStep(targetStepId);
+                return;
+            }
+
+            // 驗證當前頁
+            if (!validateStep(currentStepId)) return;
+
+            // 解鎖
+            if (targetIdx > maxUnlockedStepIdx) {
+                maxUnlockedStepIdx = targetIdx;
+            }
+            switchStep(targetStepId);
+            updateStepLocks();
+        }
+
+        function updateStepLocks() {
+            stepOrder.forEach((id, idx) => {
+                const btn = document.getElementById(`btn-${id}`);
+                if (idx <= maxUnlockedStepIdx) {
+                    btn.removeAttribute('disabled');
+                } else {
+                    btn.setAttribute('disabled', 'true');
+                }
+            });
+        }
+
+        function showBannerAlert(msg) {
+            const div = document.createElement('div');
+            div.className = "fixed bottom-5 right-5 bg-rose-600 text-white text-xs font-black px-5 py-3 rounded-2xl shadow-2xl z-50 flex items-center gap-2 animate-bounce";
+            div.innerHTML = `<span>⚠️ ${msg}</span>`;
+            document.body.appendChild(div);
+            setTimeout(() => div.remove(), 4000);
+        }
+
+        // ==================== 頁面三: 組員動態管理 ====================
+        function adjustMemberCount(count) {
+            memberCount = count;
+            document.getElementById('member-count-badge').innerText = `${memberCount} 人`;
+            
+            if (memberCount > members.length) {
+                const diff = memberCount - members.length;
+                for (let i = 0; i < diff; i++) {
+                    const nextId = `m${members.length + 1}`;
+                    members.push({
+                        id: nextId,
+                        name: `組員 ${members.length + 1}`,
+                        isLeader: false,
+                        avatar: avatarEmojis[members.length % avatarEmojis.length],
+                        customAvatarUrl: null,
+                        specialty: 'all'
+                    });
+                }
+            } else if (memberCount < members.length) {
+                members = members.slice(0, memberCount);
+                if (!members.some(m => m.isLeader)) {
+                    members[0].isLeader = true;
+                }
+            }
+            renderTeamSetup();
+        }
+
+        function renderTeamSetup() {
+            const container = document.getElementById('members-container');
+            container.innerHTML = members.map(m => `
+                <div class="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                    <div class="flex items-center gap-3.5 w-full md:w-auto">
+                        <!-- 大頭貼 (含自訂FileReader) -->
+                        <div onclick="triggerCustomAvatar('${m.id}')" class="relative group cursor-pointer w-11 h-11 rounded-full bg-white border border-slate-200 flex items-center justify-center text-2xl overflow-hidden shadow-sm shrink-0">
+                            <span id="avatar-view-${m.id}">${m.customAvatarUrl ? `<img src="${m.customAvatarUrl}" class="w-full h-full object-cover">` : m.avatar}</span>
+                            <div class="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
+                                <span class="text-[10px] text-white font-bold">上傳</span>
+                            </div>
+                        </div>
+                        <input type="file" id="file-input-${m.id}" onchange="uploadAvatarLocal(this, '${m.id}')" class="hidden" accept="image/*">
+
+                        <div class="flex-1 md:w-44">
+                            <input type="text" value="${m.name}" onchange="renameMember('${m.id}', this.value)" class="font-bold text-xs bg-white border border-slate-200 rounded-xl px-3 py-1.5 w-full focus:outline-none focus:border-indigo-500">
+                        </div>
+                    </div>
+
+                    <div class="flex items-center justify-between md:justify-end gap-3.5 w-full md:w-auto">
+                        <div class="flex items-center gap-2">
+                            <span class="text-[10px] font-bold text-slate-400">主要專長：</span>
+                            <select onchange="changeSpecialty('${m.id}', this.value)" class="text-xs bg-white border border-slate-200 rounded-xl p-2 font-medium focus:outline-none focus:border-indigo-500">
+                                ${SPECIALTY_OPTIONS.map(o => `<option value="${o.value}" ${m.specialty === o.value ? 'selected' : ''}>${o.label}</option>`).join('')}
+                            </select>
+                        </div>
+
+                        <div class="flex items-center gap-2">
+                            ${m.isLeader ? `
+                                <span class="text-[10px] bg-indigo-600 text-white px-3 py-1.5 rounded-full font-black flex items-center gap-1 shadow">👑 組長</span>
+                            ` : `
+                                <button onclick="assignLeader('${m.id}')" class="text-[10px] bg-white hover:bg-slate-100 text-slate-500 border border-slate-200 px-2.5 py-1.5 rounded-xl transition font-bold">設為組長</button>
+                            `}
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function triggerCustomAvatar(id) {
+            document.getElementById(`file-input-${id}`).click();
+        }
+
+        function uploadAvatarLocal(input, id) {
+            const file = input.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const target = members.find(m => m.id === id);
+                if (target) {
+                    target.customAvatarUrl = e.target.result;
+                    document.getElementById(`avatar-view-${id}`).innerHTML = `<img src="${e.target.result}" class="w-full h-full object-cover">`;
+                }
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function renameMember(id, newName) {
+            const m = members.find(m => m.id === id);
+            if(m) m.name = newName;
+        }
+
+        function changeSpecialty(id, spec) {
+            const m = members.find(m => m.id === id);
+            if(m) m.specialty = spec;
+        }
+
+        function assignLeader(id) {
+            members.forEach(m => m.isLeader = (m.id === id));
+            renderTeamSetup();
+        }
+
+        // 系統隨機抽選指派組長
+        function autoPickLeader() {
+            if (members.length === 0) return;
+            const randomIndex = Math.floor(Math.random() * members.length);
+            members.forEach((m, idx) => m.isLeader = (idx === randomIndex));
+            renderTeamSetup();
+            
+            // 彈出成功提示
+            const div = document.createElement('div');
+            div.className = "fixed bottom-5 right-5 bg-indigo-600 text-white text-xs font-black px-5 py-3 rounded-2xl shadow-2xl z-50 flex items-center gap-2 animate-bounce";
+            div.innerHTML = `<span>👑 已隨機抽選並指派【 ${members[randomIndex].name} 】為組長！</span>`;
+            document.body.appendChild(div);
+            setTimeout(() => div.remove(), 4000);
+        }
+
+        // ==================== 頁面四: 任務管理與自動分工 ====================
+        function renderTasksSetup() {
+            const list = document.getElementById('tasks-list');
+            list.innerHTML = tasks.map(t => `
+                <div class="bg-white border border-slate-200 hover:border-slate-300 shadow-sm rounded-2xl p-3.5 flex flex-col md:flex-row md:items-center justify-between gap-3 transition">
+                    <div class="flex-1">
+                        <div class="flex flex-wrap items-center gap-1.5">
+                            <span class="text-[9px] font-black px-2 py-0.5 rounded-md text-white ${
+                                t.difficulty === 3 ? 'bg-rose-500' : t.difficulty === 2 ? 'bg-amber-500' : 'bg-emerald-500'
+                            }">加權 ${t.difficulty} 點</span>
+                            <span class="text-[10px] bg-slate-100 text-slate-600 border border-slate-200 px-1.5 py-0.5 rounded font-bold">
+                                ${SPECIALTY_OPTIONS.find(o => o.value === t.category)?.label.split(' ')[1] || '全能'}
+                            </span>
+                            <span class="text-xs font-bold text-slate-800">${t.title}</span>
+                        </div>
+                        ${t.allocationReason ? `<p class="text-[10px] text-slate-400 font-bold mt-1 italic">${t.allocationReason}</p>` : ''}
+                    </div>
+
+                    <div class="flex flex-wrap items-center gap-3 justify-between md:justify-end border-t md:border-t-0 pt-2.5 md:pt-0 border-slate-100">
+                        <div class="flex items-center gap-1.5">
+                            <span class="text-[10px] font-bold text-slate-400">負責：</span>
+                            <select onchange="assignTaskUser('${t.id}', this.value)" class="text-xs font-bold bg-slate-50 border border-slate-200 rounded-xl p-1.5 focus:outline-none">
+                                <option value="">⚠️ 未指派</option>
+                                ${members.map(m => `<option value="${m.id}" ${t.assignee === m.id ? 'selected' : ''}>${m.isLeader ? '👑' : ''} ${m.name}</option>`).join('')}
+                            </select>
+                        </div>
+                        <div class="flex items-center gap-1.5">
+                            <span class="text-[10px] font-bold text-slate-400">期限：</span>
+                            <input type="date" value="${t.deadline}" onchange="changeTaskDeadline('${t.id}', this.value)" class="text-xs bg-slate-50 border border-slate-200 rounded-xl p-1.5 focus:outline-none focus:bg-white">
+                        </div>
+                        <button onclick="deleteTask('${t.id}')" class="text-slate-400 hover:text-rose-500 p-1">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function addNewTaskHand() {
+            const titleInput = document.getElementById('new-task-title');
+            const title = titleInput.value.trim();
+            if(!title) return;
+
+            let cat = document.getElementById('new-task-category').value;
+            const diff = parseInt(document.getElementById('new-task-difficulty').value);
+
+            // 智慧專長關聯預測
+            if (cat === 'all') {
+                const text = title.toLowerCase();
+                if(text.includes('ppt') || text.includes('簡報') || text.includes('美術') || text.includes('美化')) cat = 'ppt';
+                else if(text.includes('口頭') || text.includes('報告') || text.includes('發表') || text.includes('演練')) cat = 'presentation';
+                else if(text.includes('數據') || text.includes('文獻') || text.includes('統計') || text.includes('問卷') || text.includes('查資料')) cat = 'data';
+            }
+
+            tasks.push({
+                id: `t_${Date.now()}`,
+                title: title,
+                assignee: '',
+                difficulty: diff,
+                category: cat,
+                status: 'todo',
+                proofText: '',
+                proofType: '',
+                proofUrl: '',
+                proofFile: null,
+                verifiedBy: [],
+                allocationReason: '✍️ 手動加開任務',
+                deadline: getOffsetDateString(14)
+            });
+
+            titleInput.value = '';
+            renderTasksSetup();
+        }
+
+        function assignTaskUser(id, userId) {
+            const t = tasks.find(t => t.id === id);
+            if(t) {
+                t.assignee = userId;
+                const m = members.find(m => m.id === userId);
+                t.allocationReason = m ? `✍️ 手動指派給 ${m.name}` : '';
+            }
+        }
+
+        function changeTaskDeadline(id, dl) {
+            const t = tasks.find(t => t.id === id);
+            if(t) t.deadline = dl;
+        }
+
+        function deleteTask(id) {
+            tasks = tasks.filter(t => t.id !== id);
+            renderTasksSetup();
+        }
+
+        // ==================== 智慧分工演算法 ====================
+        function runLocalAllocation(taskList) {
+            if (taskList.length === 0) return [];
+
+            // 確保每個人都有乾淨未被派定的 workload 屬性
+            const workloads = members.map(m => ({
+                id: m.id,
+                name: m.name,
+                points: 0,
+                specialty: m.specialty || 'all'
+            }));
+
+            let allocated = taskList.map(t => ({ ...t, assignee: '', allocationReason: '' }));
+
+            // 階段 1：首輪滿足組員基本參與（每人至少指派一項專長強關聯任務）
+            workloads.forEach(w => {
+                let foundIdx = allocated.findIndex(t => !t.assignee && t.category === w.specialty);
+                if (foundIdx === -1) {
+                    foundIdx = allocated.findIndex(t => !t.assignee && t.category === 'all');
+                }
+                if (foundIdx === -1) {
+                    foundIdx = allocated.findIndex(t => !t.assignee);
+                }
+
+                if (foundIdx !== -1) {
+                    allocated[foundIdx].assignee = w.id;
+                    w.points += allocated[foundIdx].difficulty;
+                    allocated[foundIdx].allocationReason = `🌟 首輪分派：專長優先【${SPECIALTY_OPTIONS.find(o => o.value === allocated[foundIdx].category)?.label.split(' ')[1] || '全能'}】保障基本參與`;
+                }
+            });
+
+            // 階段 2：剩餘任務按照「當前累計加權點數最低」進行智慧配給
+            let unassigned = allocated.filter(t => !t.assignee);
+            unassigned.sort((a, b) => b.difficulty - a.difficulty); // 重任務優先分
+
+            unassigned.forEach(task => {
+                workloads.sort((a, b) => a.points - b.points); // 找出最閒的人
+                const targetWorker = workloads[0];
+
+                const original = allocated.find(t => t.id === task.id);
+                if (original) {
+                    original.assignee = targetWorker.id;
+                    targetWorker.points += task.difficulty;
+
+                    const matchSpec = task.category !== 'all' && targetWorker.specialty === task.category;
+                    if (matchSpec) {
+                        original.allocationReason = `✨ 專長符合配對 (【${SPECIALTY_OPTIONS.find(o => o.value === task.category)?.label.split(' ')[1]}】且工作量平衡)`;
+                    } else {
+                        original.allocationReason = `⚖️ 負載平衡調度 (指派至此時段負載最輕成員)`;
+                    }
+                }
+            });
+
+            // 動態平滑推演截止日期
+            allocated.forEach((t, idx) => {
+                const progressRatio = 0.3 + (idx / allocated.length) * 0.6;
+                const dl = new Date(projectDeadline);
+                const today = new Date();
+                const totalDiff = dl - today;
+                if(totalDiff > 0) {
+                    const finalTaskDate = new Date(today.getTime() + totalDiff * progressRatio);
+                    t.deadline = finalTaskDate.toISOString().split('T')[0];
+                }
+            });
+
+            return allocated;
+        }
+
+        function handleLocalAllocationOnly() {
+            if (tasks.length === 0) {
+                showBannerAlert('請先於下方手動加開數個任務！');
+                return;
+            }
+            tasks = runLocalAllocation(tasks);
+            renderTasksSetup();
+        }
+
+        // ==================== 🧠 AI 智慧細分拆解 (Gemini API 深度連結與備援) ====================
+        async function handleAiDeconstructAndAllocate() {
+            if (!projectName.trim()) {
+                showBannerAlert('請填寫第一頁的「專題研究大標題」再使用 AI！');
+                switchStep('step_project');
+                return;
+            }
+
+            const aiBtn = document.getElementById('ai-btn');
+            aiBtn.disabled = true;
+            aiBtn.innerHTML = `<span>⏳ AI 正在極細化解構...</span>`;
+
+            // Gemini API 呼叫結構 (依據規範：採用 gemini-2.5-flash-preview-09-2025)
+            const apiKey = ""; // 執行時平台將自動填補
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+            const systemPrompt = `你是一個資深的探究與實作指導老師與敏捷專案經理。你的任務是分析學生的「專題報告標題」與「作業規範內容」。
+為了保障「工作負載完全對稱均衡、防範躺分、可量化」的目的，你必須將這整份大專題高度拆解成至少 ${memberCount * 2} 個 (不超過 10 個) 微型、精細、完全具體、可查驗、可於 1-2 天內落實的獨立子工作。
+請嚴格輸出符合 schema 要求之 JSON ARRAY。
+子任務 category 分類限為："data" (數據文獻)、"ppt" (簡報設計美化)、"presentation" (口條演練彙整)、"all" (不限專長)。
+子任務 difficulty 難度權重限為 1, 2, 3。
+請勿附帶 markdown markdown \`\`\` 以外的任何解釋文字。`;
+
+            const userQuery = `請依據專題名稱：「${projectName}」和規範：「${assignmentText}」，幫我為 ${memberCount} 個人拆分並安排微型任務。請提供 JSON。`;
+
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: "ARRAY",
+                        items: {
+                            type: "OBJECT",
+                            properties: {
+                                title: { type: "STRING" },
+                                difficulty: { type: "INTEGER" },
+                                category: { type: "STRING" }
+                            },
+                            required: ["title", "difficulty", "category"]
+                        }
+                    }
+                }
+            };
+
+            let success = false;
+            let resultText = "";
+            let retries = 3;
+            let delay = 1000;
+
+            // 具備指數退避重試之 HTTP 串接
+            while (retries > 0 && !success) {
+                try {
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    if (!response.ok) throw new Error("API Response Error");
+                    const data = await response.json();
+                    resultText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                    if(resultText) success = true;
+                } catch(e) {
+                    retries--;
+                    if(retries === 0) break;
+                    await new Promise(r => setTimeout(r, delay));
+                    delay *= 2;
+                }
+            }
+
+            if (success) {
+                try {
+                    const rawJson = JSON.parse(resultText);
+                    const parsedTasks = rawJson.map((t, idx) => ({
+                        id: `t_ai_${Date.now()}_${idx}`,
+                        title: t.title,
+                        difficulty: Math.min(3, Math.max(1, parseInt(t.difficulty) || 2)),
+                        category: t.category || 'all',
+                        status: 'todo',
+                        proofText: '',
+                        proofType: '',
+                        proofUrl: '',
+                        proofFile: null,
+                        verifiedBy: [],
+                        allocationReason: '',
+                        deadline: projectDeadline
+                    }));
+
+                    // 執行智慧分配
+                    tasks = runLocalAllocation(parsedTasks);
+                    renderTasksSetup();
+
+                } catch (e) {
+                    fallbackLocalDeconstructor("JSON 解析失敗，啟用高強度備援演算法！");
+                }
+            } else {
+                fallbackLocalDeconstructor("AI 繁忙中，已為您自動載入高強度離線精細拆解方案！");
+            }
+
+            aiBtn.disabled = false;
+            aiBtn.innerHTML = `<span>✨ AI 智慧細分派工</span>`;
+        }
+
+        // 當 API 超時或未提供 Key 時的離線高級解構備援方案
+        function fallbackLocalDeconstructor(notice) {
+            showBannerAlert(notice);
+            
+            const localTemplates = [
+                { title: `收集與本研究「${projectName}」最相關的3篇核心國內文獻`, difficulty: 1, category: 'data' },
+                { title: `收集分析國內外對於本政策的特徵數據與政策漏洞`, difficulty: 2, category: 'data' },
+                { title: `規劃「${projectName}」之實體或線上問卷回收平台架構`, difficulty: 2, category: 'data' },
+                { title: `清洗與篩選問卷回收中的無效/重複干擾數據`, difficulty: 2, category: 'all' },
+                { title: `規劃精緻 PPT 的視覺色彩系統與大綱骨架`, difficulty: 1, category: 'ppt' },
+                { title: `將回收的數據轉換為高質感的圖表，導入 PPT 中美化`, difficulty: 3, category: 'ppt' },
+                { title: `完成 15 頁書面研究報告的排版、頁碼校對與格式彙整`, difficulty: 2, category: 'all' },
+                { title: `依據 PPT 進行口頭發表時間校對、報告逐字稿演練錄音`, difficulty: 2, category: 'presentation' },
+                { title: `彙整全部組員在過程中的心得、反思與困難排除並填入報告`, difficulty: 1, category: 'presentation' }
+            ];
+
+            const parsed = localTemplates.map((t, idx) => ({
+                id: `t_local_${Date.now()}_${idx}`,
+                title: t.title,
+                difficulty: t.difficulty,
+                category: t.category,
+                status: 'todo',
+                proofText: '',
+                proofType: '',
+                proofUrl: '',
+                proofFile: null,
+                verifiedBy: [],
+                allocationReason: '',
+                deadline: projectDeadline
+            }));
+
+            tasks = runLocalAllocation(parsed);
+            renderTasksSetup();
+        }
+
+        // ==================== 頁面五: 看板與零信任互動模組 ====================
+        function initTrackingDashboard() {
+            // 切換下拉模擬帳號
+            const select = document.getElementById('user-simulator-select');
+            select.innerHTML = members.map(m => `<option value="${m.id}" ${currentUser === m.id ? 'selected' : ''}>${m.isLeader ? '👑 組長' : '組員'} - ${m.name}</option>`).join('');
+            renderKanban();
+            updateContributionChart();
+        }
+
+        function switchUserContext(val) {
+            currentUser = val;
+            renderKanban();
+        }
+
+        function renderKanban() {
+            const colTodo = document.getElementById('col-todo');
+            const colReview = document.getElementById('col-review');
+            const colDone = document.getElementById('col-done');
+
+            const tTodo = tasks.filter(t => t.status === 'todo');
+            const tReview = tasks.filter(t => t.status === 'review');
+            const tDone = tasks.filter(t => t.status === 'done');
+
+            document.getElementById('todo-count').innerText = tTodo.length;
+            document.getElementById('review-count').innerText = tReview.length;
+            document.getElementById('done-count').innerText = tDone.length;
+
+            // 1. Todo Rendering
+            colTodo.innerHTML = tTodo.map(t => {
+                const m = members.find(mem => mem.id === t.assignee);
+                const isMe = t.assignee === currentUser;
+                return `
+                    <div class="bg-white border border-slate-200 shadow-sm rounded-2xl p-3 flex flex-col gap-2 animate-fadeIn">
+                        <div>
+                            <p class="text-xs font-bold text-slate-800 leading-snug">${t.title}</p>
+                            <p class="text-[10px] text-slate-400 mt-1">負責人：<span class="text-slate-600 font-bold">${m ? m.name : '未分工'}</span></p>
+                        </div>
+                        <div class="flex items-center justify-between pt-2 border-t border-slate-100">
+                            <span class="text-[9px] font-bold bg-slate-50 border border-slate-200 text-slate-500 px-1.5 py-0.5 rounded">📅 ${t.deadline}</span>
+                            <button onclick="openProofModal('${t.id}')" 
+                                class="text-[10px] font-black px-2.5 py-1 rounded-lg transition ${
+                                    isMe ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm cursor-pointer' : 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-60'
+                                }" 
+                                ${isMe ? '' : 'disabled'} 
+                                title="${isMe ? '這是您的任務' : '請先切換至該負責人身分即可提交'}">提交成果</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            // 2. Review Rendering (雙重同儕驗收審查)
+            colReview.innerHTML = tReview.map(t => {
+                const m = members.find(mem => mem.id === t.assignee);
+                const hasVoted = t.verifiedBy.includes(currentUser);
+                const canVote = t.assignee !== currentUser; // 零信任：不能自己審查自己的成果
+
+                return `
+                    <div class="bg-white border border-amber-100 shadow-sm rounded-2xl p-3 flex flex-col gap-2.5 animate-fadeIn">
+                        <div>
+                            <p class="text-xs font-bold text-slate-800 leading-snug">${t.title}</p>
+                            <p class="text-[10px] text-slate-500 mt-0.5">負責人：<strong>${m ? m.name : ''}</strong></p>
+                            
+                            <!-- 成果成果說明區 -->
+                            <div class="bg-slate-50 border border-slate-100 rounded-xl p-2.5 mt-2 text-[10px] text-slate-600 leading-relaxed">
+                                <p class="font-bold text-slate-700">📄 說明：${t.proofText || '未填寫描述'}</p>
+                                ${t.proofType === 'link' ? `<a href="${t.proofUrl}" target="_blank" class="text-indigo-600 font-bold block mt-1">🔗 雲端成果鏈結 (點擊查驗)</a>` : ''}
+                                ${t.proofType === 'file' ? `<p class="text-emerald-600 font-bold mt-1">📎 附屬檔案：${t.proofFile || '佐證照.png'}</p>` : ''}
+                            </div>
+                        </div>
+
+                        <div class="flex flex-col gap-1.5 pt-2 border-t border-slate-100">
+                            <div class="flex items-center justify-between text-[9px]">
+                                <span class="text-amber-800 font-bold">已核實：${t.verifiedBy.length} / 2 位組員</span>
+                            </div>
+                            
+                            ${hasVoted ? `
+                                <div class="text-[10px] text-emerald-600 font-bold text-center bg-emerald-50 py-1 rounded-lg border border-emerald-100">✓ 您已完成評核認可</div>
+                            ` : canVote ? `
+                                <button onclick="verifyPeerTask('${t.id}')" class="w-full text-[10px] bg-amber-500 hover:bg-amber-600 text-white font-black py-1.5 rounded-lg transition">👌 確認無誤，核發認可</button>
+                            ` : `
+                                <div class="text-[9px] text-slate-400 text-center italic bg-slate-50 py-1 rounded border border-slate-100">🔒 零信任：請切換他人身份審查</div>
+                            `}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            // 3. Done Rendering
+            colDone.innerHTML = tDone.map(t => {
+                const m = members.find(mem => mem.id === t.assignee);
+                const validators = t.verifiedBy.map(vId => members.find(me => me.id === vId)?.name || '').join(', ');
+                return `
+                    <div class="bg-white border border-emerald-100 shadow-sm rounded-2xl p-3 flex flex-col gap-1 relative overflow-hidden animate-fadeIn">
+                        <div class="absolute top-0 right-0 bg-emerald-500 text-white text-[8px] font-black px-2 py-0.5 rounded-bl-lg">PASS</div>
+                        <p class="text-xs font-bold text-slate-600 line-through pr-8 leading-snug">${t.title}</p>
+                        <p class="text-[9px] text-emerald-700 font-extrabold mt-1">✓ 查驗具名認可人：${validators}</p>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // ==================== 彈窗與實證上傳 ====================
+        function openProofModal(taskId) {
+            const t = tasks.find(t => t.id === taskId);
+            if(!t) return;
+            
+            // 零信任防作弊限制：非負責人不可點入提交
+            if (t.assignee !== currentUser) {
+                showBannerAlert('您並非該任務的負責人，無法提交成果！');
+                return;
+            }
+            
+            activeTaskForProof = t;
+            document.getElementById('modal-task-title').innerText = t.title;
+            document.getElementById('modal-proof-desc').value = '';
+            document.getElementById('modal-proof-link').value = '';
+            document.getElementById('modal-proof-file-status').innerText = '點選夾帶問卷統計圖、程式碼截圖或報告';
+            document.getElementById('modal-proof-file-status').className = 'text-[11px] text-slate-500 font-bold';
+            attachedProofFileName = null;
+            switchProofType('file');
+
+            document.getElementById('proof-modal').style.display = 'flex';
+        }
+
+        function closeProofModal() {
+            document.getElementById('proof-modal').style.display = 'none';
+            activeTaskForProof = null;
+        }
+
+        function switchProofType(type) {
+            activeProofType = type;
+            const btnFile = document.getElementById('btn-proof-file');
+            const btnLink = document.getElementById('btn-proof-link');
+            const wrapFile = document.getElementById('proof-input-file-wrapper');
+            const wrapLink = document.getElementById('proof-input-link-wrapper');
+
+            if (type === 'file') {
+                btnFile.className = "text-xs font-bold p-2 rounded-xl border transition flex items-center justify-center gap-1.5 bg-indigo-50 border-indigo-500 text-indigo-600";
+                btnLink.className = "text-xs font-bold p-2 rounded-xl border transition flex items-center justify-center gap-1.5 bg-white border-slate-200 text-slate-600";
+                wrapFile.classList.remove('hidden');
+                wrapLink.classList.add('hidden');
+            } else {
+                btnFile.className = "text-xs font-bold p-2 rounded-xl border transition flex items-center justify-center gap-1.5 bg-white border-slate-200 text-slate-600";
+                btnLink.className = "text-xs font-bold p-2 rounded-xl border transition flex items-center justify-center gap-1.5 bg-indigo-50 border-indigo-500 text-indigo-600";
+                wrapFile.classList.add('hidden');
+                wrapLink.classList.remove('hidden');
+            }
+        }
+
+        function submitWorkProof() {
+            if(!activeTaskForProof) return;
+            const desc = document.getElementById('modal-proof-desc').value.trim();
+            if(!desc) {
+                showBannerAlert('請填寫成果說明描述！');
+                return;
+            }
+
+            activeTaskForProof.status = 'review';
+            activeTaskForProof.proofText = desc;
+            activeTaskForProof.proofType = activeProofType;
+            activeTaskForProof.proofUrl = (activeProofType === 'link') ? document.getElementById('modal-proof-link').value : '';
+            activeTaskForProof.proofFile = (activeProofType === 'file') ? (attachedProofFileName || '佐證截圖_已送出.png') : null;
+            activeTaskForProof.verifiedBy = []; // 歸零審查票
+
+            closeProofModal();
+            renderKanban();
+            updateContributionChart();
+        }
+
+        function verifyPeerTask(taskId) {
+            const t = tasks.find(t => t.id === taskId);
+            if(t) {
+                if(!t.verifiedBy.includes(currentUser)) {
+                    t.verifiedBy.push(currentUser);
+                    if(t.verifiedBy.length >= 2) {
+                        t.status = 'done';
+                        // 觸發高質感物理粒子爆炸
+                        triggerConfetti();
+                    }
+                    renderKanban();
+                    updateContributionChart();
+                }
+            }
+        }
+
+        // ==================== 互動式 HTML5 Canvas 圖表 ====================
+        let canvas, ctx;
+        let chartData = [];
+        let particles = [];
+        let animationFrameId = null;
+        let hoveredSliceIdx = -1;
+
+        function initCanvas() {
+            canvas = document.getElementById('contributionCanvas');
+            ctx = canvas.getContext('2d');
+
+            // 確保 Retina 螢幕不模糊
+            const dpr = window.devicePixelRatio || 1;
+            const rect = canvas.getBoundingClientRect();
+            canvas.width = rect.width * dpr;
+            canvas.height = rect.height * dpr;
+            ctx.scale(dpr, dpr);
+
+            // 滑鼠移動互動
+            canvas.addEventListener('mousemove', handleCanvasMouseMove);
+            canvas.addEventListener('mouseleave', () => {
+                hoveredSliceIdx = -1;
+                drawDonutChart();
+            });
+
+            // 物理粒子循環
+            requestAnimationFrame(particleLoop);
+        }
+
+        function getContributionData() {
+            const colors = ['#6366f1', '#10b981', '#f59e0b', '#ec4899', '#3b82f6', '#8b5cf6', '#f43f5e', '#06b6d4'];
+            let totalDonePoints = 0;
+
+            const list = members.map((m, index) => {
+                const myTasks = tasks.filter(t => t.assignee === m.id);
+                const totalPoints = myTasks.reduce((sum, t) => sum + t.difficulty, 0);
+                const donePoints = myTasks.filter(t => t.status === 'done').reduce((sum, t) => sum + t.difficulty, 0);
+                const reviewPoints = myTasks.filter(t => t.status === 'review').reduce((sum, t) => sum + t.difficulty, 0);
+                
+                totalDonePoints += donePoints;
+
+                // 躺分警鑑防作弊評估
+                const reviewVotes = myTasks.reduce((sum, t) => sum + t.verifiedBy.length, 0);
+                const maxVotes = myTasks.length * 2;
+                const voteRate = maxVotes > 0 ? (reviewVotes / maxVotes) : 1;
+                const score = totalPoints > 0 ? Math.round((donePoints / totalPoints) * 80 + (voteRate * 20)) : 50;
+
+                return {
+                    id: m.id,
+                    name: m.name,
+                    avatar: m.avatar,
+                    color: colors[index % colors.length],
+                    donePoints: donePoints,
+                    reviewPoints: reviewPoints,
+                    totalPoints: totalPoints,
+                    score: score
+                };
+            });
+
+            return { list, totalDonePoints };
+        }
+
+        function updateContributionChart() {
+            const { list, totalDonePoints } = getContributionData();
+            
+            let accumAngle = 0;
+            chartData = list.map(item => {
+                const percent = totalDonePoints > 0 ? (item.donePoints / totalDonePoints) : (1 / members.length);
+                const angle = percent * Math.PI * 2;
+                const start = accumAngle;
+                const end = accumAngle + angle;
+                accumAngle = end;
+
+                return {
+                    ...item,
+                    percent: Math.round(percent * 100),
+                    startAngle: start,
+                    endAngle: end
+                };
+            });
+
+            drawDonutChart();
+            renderSlackerReport(list);
+        }
+
+        function drawDonutChart() {
+            if(!ctx) return;
+            const width = canvas.width / (window.devicePixelRatio || 1);
+            const height = canvas.height / (window.devicePixelRatio || 1);
+            ctx.clearRect(0, 0, width, height);
+
+            const centerX = width / 2;
+            const centerY = height / 2;
+            const outerRadius = Math.min(width, height) * 0.42;
+            const innerRadius = Math.min(width, height) * 0.22;
+
+            const { totalDonePoints } = getContributionData();
+
+            if (totalDonePoints === 0) {
+                // 空白缺省圈
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, outerRadius, 0, Math.PI * 2);
+                ctx.strokeStyle = '#e2e8f0';
+                ctx.lineWidth = outerRadius - innerRadius;
+                ctx.stroke();
+
+                ctx.font = 'bold 11px sans-serif';
+                ctx.fillStyle = '#94a3b8';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('尚未有人', centerX, centerY - 6);
+                ctx.fillText('完成查驗', centerX, centerY + 8);
+                return;
+            }
+
+            chartData.forEach((slice, idx) => {
+                const isHovered = (idx === hoveredSliceIdx);
+                const offset = isHovered ? 8 : 0;
+                
+                // 計算偏離圓心微移 (3D 突出動態感)
+                const midAngle = (slice.startAngle + slice.endAngle) / 2;
+                const shiftX = Math.cos(midAngle) * offset;
+                const shiftY = Math.sin(midAngle) * offset;
+
+                ctx.save();
+                ctx.translate(shiftX, shiftY);
+
+                // 畫大圓弧外徑
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, outerRadius, slice.startAngle, slice.endAngle);
+                ctx.arc(centerX, centerY, innerRadius, slice.endAngle, slice.startAngle, true);
+                ctx.closePath();
+
+                ctx.fillStyle = slice.color;
+                ctx.shadowColor = 'rgba(99, 102, 241, 0.1)';
+                ctx.shadowBlur = isHovered ? 12 : 0;
+                ctx.fill();
+                ctx.restore();
+            });
+
+            // 中心遮罩繪製出中空甜甜圈效果
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, innerRadius, 0, Math.PI * 2);
+            ctx.fillStyle = '#ffffff';
+            ctx.fill();
+
+            // 中心文字 (若有 Hover 顯示特定人，否則顯示總分)
+            if (hoveredSliceIdx !== -1 && chartData[hoveredSliceIdx]) {
+                const curr = chartData[hoveredSliceIdx];
+                ctx.font = '900 13px sans-serif';
+                ctx.fillStyle = '#1e293b';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(curr.name, centerX, centerY - 8);
+
+                ctx.font = 'bold 10px sans-serif';
+                ctx.fillStyle = curr.color;
+                ctx.fillText(`${curr.percent}% (${curr.donePoints}點)`, centerX, centerY + 8);
+            } else {
+                ctx.font = 'bold 9px sans-serif';
+                ctx.fillStyle = '#94a3b8';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('已核查總點數', centerX, centerY - 8);
+
+                ctx.font = '900 16px sans-serif';
+                ctx.fillStyle = '#4f46e5';
+                ctx.fillText(totalDonePoints, centerX, centerY + 8);
+            }
+        }
+
+        function handleCanvasMouseMove(e) {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+
+            const width = rect.width;
+            const height = rect.height;
+            const centerX = width / 2;
+            const centerY = height / 2;
+
+            const dx = x - centerX;
+            const dy = y - centerY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            const outerRadius = Math.min(width, height) * 0.42;
+            const innerRadius = Math.min(width, height) * 0.22;
+
+            if (dist < innerRadius || dist > outerRadius) {
+                hoveredSliceIdx = -1;
+                drawDonutChart();
+                return;
+            }
+
+            // 計算弧度
+            let angle = Math.atan2(dy, dx);
+            if (angle < 0) angle += Math.PI * 2;
+
+            let foundIdx = -1;
+            chartData.forEach((slice, idx) => {
+                if (angle >= slice.startAngle && angle <= slice.endAngle) {
+                    foundIdx = idx;
+                }
+            });
+
+            if (foundIdx !== hoveredSliceIdx) {
+                hoveredSliceIdx = foundIdx;
+                drawDonutChart();
+            }
+        }
+
+        function renderSlackerReport(list) {
+            const report = document.getElementById('slacker-report-list');
+            report.innerHTML = list.map(item => {
+                const progressWidth = item.totalPoints > 0 ? (item.donePoints / item.totalPoints) * 100 : 0;
+                const reviewWidth = item.totalPoints > 0 ? (item.reviewPoints / item.totalPoints) * 100 : 0;
+                const percentDone = item.totalPoints > 0 ? Math.round((item.donePoints / item.totalPoints) * 100) : 0;
+
+                return `
+                    <div class="bg-slate-50 border border-slate-200/60 rounded-2xl p-3 flex flex-col gap-1.5 transition">
+                        <div class="flex items-center justify-between text-xs font-bold">
+                            <div class="flex items-center gap-1.5">
+                                <span class="w-2.5 h-2.5 rounded-full" style="background-color: ${item.color}"></span>
+                                <span class="text-slate-800">${item.name}</span>
+                            </div>
+                            <span class="text-[11px] text-slate-500 font-mono">任務完成比：<strong class="text-slate-800 text-xs">${percentDone}%</strong></span>
+                        </div>
+                        
+                        <!-- 雙軌進度條 (實體 Done 與 Review 待核查) -->
+                        <div class="w-full bg-slate-200/80 h-2.5 rounded-full overflow-hidden flex">
+                            <div class="bg-emerald-500 transition-all duration-500" style="width: ${progressWidth}%" title="已核實通過"></div>
+                            <div class="bg-amber-400 transition-all duration-500" style="width: ${reviewWidth}%" title="審核中"></div>
+                        </div>
+
+                        <div class="flex items-center justify-between text-[10px] text-slate-400 font-bold font-mono">
+                            <span>分配到：${item.totalPoints} 加權點數</span>
+                            <span class="flex items-center gap-2">
+                                <span class="text-emerald-600">已落實：${item.donePoints} 點</span>
+                                ${item.reviewPoints > 0 ? `<span class="text-amber-500 animate-pulse">審查中：${item.reviewPoints} 點</span>` : ''}
+                                <span class="bg-white border text-slate-600 px-1.5 py-0.5 rounded-md">零信任綜合評分：${item.score}分</span>
+                            </span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // ==================== 物理彩帶粒子效果 ====================
+        function triggerConfetti() {
+            const colors = ['#6366f1', '#10b981', '#f59e0b', '#ec4899', '#3b82f6', '#8b5cf6'];
+            const rect = canvas.getBoundingClientRect();
+            const width = rect.width;
+            const height = rect.height;
+
+            for (let i = 0; i < 60; i++) {
+                particles.push({
+                    x: width / 2,
+                    y: height / 2,
+                    vx: (Math.random() - 0.5) * 8,
+                    vy: (Math.random() - 0.7) * 9 - 3,
+                    color: colors[Math.floor(Math.random() * colors.length)],
+                    radius: Math.random() * 4 + 2,
+                    alpha: 1,
+                    decay: Math.random() * 0.015 + 0.01
+                });
+            }
+        }
+
+        function particleLoop() {
+            if (particles.length > 0) {
+                const dpr = window.devicePixelRatio || 1;
+                // 重繪 Donut Chart 的同時處理 Particle
+                drawDonutChart();
+
+                particles.forEach((p, idx) => {
+                    p.x += p.vx;
+                    p.y += p.vy;
+                    p.vy += 0.15; // 模擬重力
+                    p.alpha -= p.decay;
+
+                    if (p.alpha <= 0) {
+                        particles.splice(idx, 1);
+                        return;
+                    }
+
+                    ctx.save();
+                    ctx.globalAlpha = p.alpha;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                    ctx.fillStyle = p.color;
+                    ctx.fill();
+                    ctx.restore();
+                });
+            }
+            animationFrameId = requestAnimationFrame(particleLoop);
+        }
+    </script>
+</body>
+</html>
